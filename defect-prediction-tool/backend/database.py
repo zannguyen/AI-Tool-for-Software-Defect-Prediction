@@ -12,7 +12,7 @@ from typing import List, Dict, Optional
 class HistoryDatabase:
     """SQLite database handler for storing analysis history"""
 
-    def __init__(self, db_path: str = "database/history.db"):
+    def __init__(self, db_path: str = "backend/database/history.db"):
         self.db_path = db_path
         self._init_database()
 
@@ -69,6 +69,37 @@ class HistoryDatabase:
                 f1_score REAL,
                 roc_auc REAL,
                 FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+            )
+        ''')
+
+        # Create conversations table (for ChatGPT-like history)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT UNIQUE NOT NULL,
+                timestamp TEXT NOT NULL,
+                name TEXT,
+                folder_name TEXT,
+                files_count INTEGER,
+                status TEXT DEFAULT 'in_progress',
+                total_loc INTEGER,
+                avg_complexity REAL,
+                avg_defect_prob REAL,
+                high_risk_count INTEGER,
+                medium_risk_count INTEGER,
+                low_risk_count INTEGER
+            )
+        ''')
+
+        # Create conversation_messages table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS conversation_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT NOT NULL,
+                message_type TEXT NOT NULL,
+                content TEXT,
+                timestamp TEXT NOT NULL,
+                FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id)
             )
         ''')
 
@@ -262,3 +293,148 @@ class HistoryDatabase:
 
         conn.close()
         return count
+
+    # ==================== Conversation Methods ====================
+
+    def create_conversation(self, name: str = None, folder_name: str = None) -> str:
+        """
+        Create a new conversation (like ChatGPT)
+
+        Args:
+            name: Conversation name
+            folder_name: Folder being analyzed
+
+        Returns:
+            conversation_id
+        """
+        conversation_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            INSERT INTO conversations (
+                conversation_id, timestamp, name, folder_name, files_count, status
+            ) VALUES (?, ?, ?, ?, 0, 'in_progress')
+        ''', (
+            conversation_id,
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            name or f"Analysis {conversation_id}",
+            folder_name
+        ))
+
+        conn.commit()
+        conn.close()
+
+        return conversation_id
+
+    def update_conversation(self, conversation_id: str, files_count: int, total_loc: int,
+                          avg_complexity: float, avg_defect_prob: float,
+                          high_risk: int = 0, medium_risk: int = 0, low_risk: int = 0):
+        """Update conversation with analysis results"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            UPDATE conversations SET
+                files_count = ?,
+                total_loc = ?,
+                avg_complexity = ?,
+                avg_defect_prob = ?,
+                high_risk_count = ?,
+                medium_risk_count = ?,
+                low_risk_count = ?,
+                status = 'completed'
+            WHERE conversation_id = ?
+        ''', (files_count, total_loc, avg_complexity, avg_defect_prob,
+              high_risk, medium_risk, low_risk, conversation_id))
+
+        conn.commit()
+        conn.close()
+
+    def add_message(self, conversation_id: str, message_type: str, content: str):
+        """
+        Add a message to conversation
+
+        Args:
+            conversation_id: Conversation ID
+            message_type: Type of message (user, assistant, system)
+            content: Message content
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            INSERT INTO conversation_messages (conversation_id, message_type, content, timestamp)
+            VALUES (?, ?, ?, ?)
+        ''', (conversation_id, message_type, content, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+
+        conn.commit()
+        conn.close()
+
+    def get_all_conversations(self) -> List[Dict]:
+        """Get all conversations"""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT * FROM conversations ORDER BY timestamp DESC
+        ''')
+
+        conversations = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+
+        return conversations
+
+    def get_conversation(self, conversation_id: str) -> Dict:
+        """Get conversation details"""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute('SELECT * FROM conversations WHERE conversation_id = ?', (conversation_id,))
+        row = cursor.fetchone()
+        conversation = dict(row) if row else {}
+
+        if conversation:
+            cursor.execute('''
+                SELECT * FROM conversation_messages
+                WHERE conversation_id = ?
+                ORDER BY timestamp ASC
+            ''', (conversation_id,))
+            conversation['messages'] = [dict(row) for row in cursor.fetchall()]
+
+        conn.close()
+        return conversation
+
+    def get_messages(self, conversation_id: str) -> List[Dict]:
+        """Get all messages for a conversation"""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT * FROM conversation_messages
+            WHERE conversation_id = ?
+            ORDER BY timestamp ASC
+        ''', (conversation_id,))
+
+        messages = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return messages
+
+    def delete_conversation(self, conversation_id: str) -> bool:
+        """Delete a conversation"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            cursor.execute('DELETE FROM conversation_messages WHERE conversation_id = ?', (conversation_id,))
+            cursor.execute('DELETE FROM conversations WHERE conversation_id = ?', (conversation_id,))
+
+            conn.commit()
+            conn.close()
+            return True
+        except:
+            return False

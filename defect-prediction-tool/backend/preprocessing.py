@@ -139,7 +139,7 @@ def remove_outliers(df: pd.DataFrame, columns: List[str], threshold: float = 3.0
 
 
 def split_data(X: pd.DataFrame, y: pd.Series, test_size: float = 0.2,
-                random_state: int = 42) -> Tuple:
+                random_state: int = 42, stratify=None) -> Tuple:
     """
     Split data into training and testing sets
 
@@ -148,11 +148,12 @@ def split_data(X: pd.DataFrame, y: pd.Series, test_size: float = 0.2,
         y: Target
         test_size: Proportion of test set
         random_state: Random seed
+        stratify: Stratify split (default None)
 
     Returns:
         Tuple of (X_train, X_test, y_train, y_test)
     """
-    return train_test_split(X, y, test_size=test_size, random_state=random_state)
+    return train_test_split(X, y, test_size=test_size, random_state=random_state, stratify=stratify)
 
 
 def scale_features(X_train: np.ndarray, X_test: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:

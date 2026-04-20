@@ -147,7 +147,7 @@ class CodeMetricsExtractor:
         total_params = sum(len(p.split(',')) for p in re.findall(r'def\s+\w+\(([^)]*)\)', content))
 
         return {
-            'filename': filename,
+            'file_name': filename,
             'LOC': loc,
             'LOC_BLANK': blank_lines,
             'LOC_TOTAL': total_lines,
@@ -200,7 +200,7 @@ class CodeMetricsExtractor:
         import_count = len(re.findall(r'^import\s+', content, re.MULTILINE))
 
         return {
-            'filename': filename,
+            'file_name': filename,
             'LOC': loc,
             'LOC_BLANK': blank_lines,
             'LOC_TOTAL': total_lines,
@@ -250,7 +250,7 @@ class CodeMetricsExtractor:
         cyclomatic_complexity = decision_points + 1
 
         return {
-            'filename': filename,
+            'file_name': filename,
             'LOC': loc,
             'LOC_BLANK': blank_lines,
             'LOC_TOTAL': total_lines,
@@ -298,7 +298,7 @@ class CodeMetricsExtractor:
         define_count = len(re.findall(r'^#define', content, re.MULTILINE))
 
         return {
-            'filename': filename,
+            'file_name': filename,
             'LOC': loc,
             'LOC_BLANK': blank_lines,
             'LOC_TOTAL': total_lines,

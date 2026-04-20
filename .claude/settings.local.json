@@ -2,7 +2,36 @@
   "permissions": {
     "allow": [
       "Bash(\"c:\\\\Users\\\\Dell 7630\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python313\\\\python.exe\" create_week6.py)",
-      "Bash(\"c:\\\\Users\\\\Dell 7630\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python313\\\\python.exe\" create_week7.py)"
+      "Bash(\"c:\\\\Users\\\\Dell 7630\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python313\\\\python.exe\" create_week7.py)",
+      "Bash(\"c:\\\\Users\\\\Dell 7630\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python313\\\\python.exe\" -c \"import app; print\\(''OK''\\)\")",
+      "Bash(\"c:\\\\Users\\\\Dell 7630\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python313\\\\python.exe\" create_proposal.py)",
+      "Bash(python3 -c \":*)",
+      "Bash(python -c \":*)",
+      "Bash(where python:*)",
+      "Bash(where python3:*)",
+      "Read(//c/Users/**)",
+      "Bash(C:/Users/Dell/AppData/Local/Programs/Python/Python313/python.exe -c \":*)",
+      "Bash(\"/c/Users/Dell 7630/AppData/Local/Programs/Python/Python313/python.exe\" -c \":*)",
+      "Bash(pip show:*)",
+      "Bash(pip install:*)",
+      "Bash(\"/c/Users/Dell 7630/AppData/Local/Programs/Python/Python313/python.exe\" convert_proposal.py)",
+      "Bash(\"/c/Users/Dell 7630/AppData/Local/Programs/Python/Python313/python.exe\" convert_week1.py)",
+      "WebFetch(domain:www.figma.com)",
+      "Bash(python -c \"import app; print\\(''OK''\\)\")",
+      "Bash(python -c ':*)",
+      "Bash(timeout 15 \"C:\\\\Users\\\\Dell 7630\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python313\\\\Scripts\\\\streamlit.exe\" run app.py --server.headless true)",
+      "Bash(timeout 20 \"C:\\\\Users\\\\Dell 7630\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python313\\\\Scripts\\\\streamlit.exe\" run app.py --server.headless true)",
+      "Bash(timeout 20 \"C:\\\\Users\\\\Dell 7630\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python313\\\\Scripts\\\\streamlit.exe\" run app.py --server.headless true --server.port 8501)",
+      "Bash(git -C \"c:/Users/Dell 7630/Desktop/SMM\" log --oneline -20)",
+      "Bash(python -m py_compile app.py)",
+      "Bash(python -c \"import app; print\\('Import OK'\\)\")",
+      "Bash(python -m py_compile app_new.py)",
+      "Bash(python -c \"import sys; sys.path.insert\\(0,'.'\\); sys.path.insert\\(0,'src'\\); exec\\(open\\('app_new.py'\\).read\\(\\).split\\('if __name__'\\)[0]\\); print\\('Backend OK'\\)\")",
+      "Bash(cp app.py app_old_backup.py)",
+      "Bash(cp app_new.py app.py)",
+      "Bash(timeout 8 streamlit run app.py --server.headless true)",
+      "Read(//dev/defect-prediction-tool/**)",
+      "Read(//dev/defect-prediction-tool/src/**)"
     ]
   }
 }

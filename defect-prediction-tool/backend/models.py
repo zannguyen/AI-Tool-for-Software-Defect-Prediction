@@ -79,8 +79,7 @@ class DefectPredictionModels:
             solver='adam',
             max_iter=500,
             random_state=self.random_state,
-            early_stopping=True,
-            validation_fraction=0.1
+            early_stopping=False
         )
 
     def initialize_models(self) -> None:
