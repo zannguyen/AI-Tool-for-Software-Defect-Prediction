@@ -42,8 +42,32 @@ class CodeMetricsExtractor:
 
         # Duyệt qua tất cả file
         for root, dirs, files in os.walk(directory_path):
-            # Bỏ qua thư mục ẩn và node_modules, venv
-            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ['node_modules', 'venv', '__pycache__', 'build', 'dist']]
+            # Bỏ qua thư mục ẩn và mọi thư mục thư viện / build output.
+            # Danh sách này đồng bộ với _SKIP_DIRS trong api.py.
+            _SKIP = {
+                # Python
+                'venv', '.venv', 'env', '.env', '__pycache__', '.eggs',
+                'site-packages', 'dist-packages', 'pip', 'setuptools',
+                'pkg_resources', 'distutils', '_distutils_hack',
+                # JavaScript / Node
+                'node_modules', '.npm', '.yarn',
+                # Java / Maven / Gradle / Android
+                'target', '.gradle', '.m2',
+                # Ruby / Go / Rust / iOS
+                'Pods', 'vendor', 'bundle', 'cargo', '.cargo',
+                # Build / dist output
+                'build', 'dist', 'bin', 'obj', 'out', '.next', '.nuxt',
+                # IDE / VCS
+                '.git', '.svn', '.hg', '.idea', '.vscode', '.vs',
+                '__MACOSX', 'bower_components',
+            }
+            dirs[:] = [
+                d for d in dirs
+                if not d.startswith('.')
+                and d not in _SKIP
+                and 'dist-info' not in d
+                and 'egg-info' not in d
+            ]
 
             for file in files:
                 file_path = os.path.join(root, file)

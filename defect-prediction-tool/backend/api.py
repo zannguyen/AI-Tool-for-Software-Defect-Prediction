@@ -65,15 +65,83 @@ def get_lang(name: str) -> tuple[str, str, str]:
 
 
 # ─────────────────────────────────────────────
+# SKIP RULES — applied to BOTH zip and directory walks
+# ─────────────────────────────────────────────
+
+# Directory segments that should NEVER be analysed.
+# Covers: Python venvs, JS deps, Java/Maven/Gradle build outputs,
+# IDE metadata, OS noise, C/C++ build artefacts, generic caches.
+_SKIP_DIRS = {
+    # Python virtualenvs & caches
+    'venv', '.venv', 'env', '.env', '__pycache__', '.eggs',
+    'site-packages', 'dist-packages', 'pip', 'setuptools', 'pkg_resources',
+    'distutils', '_distutils_hack',
+    # JavaScript / Node
+    'node_modules', '.npm', '.yarn', '.pnp',
+    # Java / Maven / Gradle
+    'target', '.gradle', '.m2',
+    # Ruby / Go / Rust
+    'Pods', 'vendor', 'bundle', 'cargo', '.cargo',
+    # Build outputs
+    'build', 'dist', 'bin', 'obj', 'out', '.next', '.nuxt', '__sapper__',
+    # Version control & IDE
+    '.git', '.svn', '.hg', '.idea', '.vscode', '.vs',
+    '__MACOSX', '.DS_Store',
+    # Package managers & lock data
+    'bower_components',
+}
+
+# File-level noise patterns (any segment of the path matching → skip)
+_SKIP_PATH_FRAGMENTS = {
+    'site-packages', 'dist-packages', 'dist-info', 'egg-info',
+    'pip-', 'setuptools', 'pkg_resources', '__pycache__',
+    '.dist-info', '.egg-link', '.egg-info',
+}
+
+
+def _should_skip_path(path: str) -> bool:
+    """
+    Return True if path contains any known library/tool directory.
+    Works for both ZIP names (forward-slash) and OS paths.
+    """
+    parts = path.replace('\\', '/').split('/')
+    for part in parts:
+        if part in _SKIP_DIRS:
+            return True
+        # Substring check for dist-info, egg-info etc.
+        for frag in _SKIP_PATH_FRAGMENTS:
+            if frag in part:
+                return True
+    return False
+
+
+# ─────────────────────────────────────────────
 # FILE HANDLING
 # ─────────────────────────────────────────────
 def extract_zip(zbytes: bytes) -> dict[str, str]:
-    """Trích xuất nội dung file từ ZIP bytes."""
-    SKIP = ['__MACOSX', '.DS_Store', 'node_modules', 'venv', '__pycache__', '.git', '.idea']
+    """Trích xuất nội dung SOURCE CODE files từ ZIP bytes.
+
+    Bỏ qua:
+      • Mọi thư mục trong _SKIP_DIRS (venv, site-packages, node_modules…)
+      • Các file không phải source code (không có ext trong LANG_MAP)
+    """
     files = {}
+    valid_exts = tuple(LANG_MAP.keys())   # chỉ giữ source-code extensions
+
     with zipfile.ZipFile(io.BytesIO(zbytes)) as z:
         for name in z.namelist():
-            if any(s in name for s in SKIP) or name.endswith('/'):
+            # Bỏ qua thư mục
+            if name.endswith('/'):
+                continue
+            # Bỏ qua library / tool paths
+            if _should_skip_path(name):
+                continue
+            # Bỏ qua file ẩn (bắt đầu bằng .)
+            basename = name.split('/')[-1]
+            if not basename or basename.startswith('.'):
+                continue
+            # Chỉ giữ lại source code
+            if not basename.lower().endswith(valid_exts):
                 continue
             try:
                 content = z.read(name).decode('utf-8', errors='replace')
@@ -84,19 +152,17 @@ def extract_zip(zbytes: bytes) -> dict[str, str]:
 
 
 def build_entries_from_zip(zbytes: bytes) -> list[dict]:
-    """Build file entries từ ZIP bytes."""
+    """Build file entries từ ZIP bytes — chỉ trả về source code files."""
     files_dict = extract_zip(zbytes)
     entries = []
     for path, content in files_dict.items():
         fname = os.path.basename(path)
-        if not fname or fname.startswith('.'):
-            continue
+        lang_tuple = get_lang(fname)
         ext = ''
         for k in LANG_MAP:
             if fname.lower().endswith(k):
                 ext = k
                 break
-        lang_tuple = get_lang(fname)
         entries.append({
             'name': path, 'fname': fname,
             'content': content, 'ext': ext, 'lang': lang_tuple,
@@ -152,6 +218,8 @@ def compute_line_risks(content: str, ext: str, file_cc: int) -> dict[int, str]:
             risks[num] = 'high'
         elif score >= 0.28:
             risks[num] = 'med'
+        elif t:  # dòng có nội dung → LOW (an toàn, bôi xanh nhạt)
+            risks[num] = 'low'
     return risks
 
 
@@ -376,6 +444,9 @@ def render_code_line(line: str, num: int, risk: str | None, ext: str) -> str:
     elif risk == 'med':
         cls += ' me'
         badge = '<span class="vs-rb me">⚡ MED</span>'
+    elif risk == 'low':
+        cls += ' lo'
+        badge = '<span class="vs-rb lo">✓ LOW</span>'
     code = tokenize_py(line) if ext == '.py' else esc(line)
     return f'<div class="{cls}"><span class="vs-ln">{num}</span><span class="vs-code-txt">{code}</span>{badge}</div>'
 
