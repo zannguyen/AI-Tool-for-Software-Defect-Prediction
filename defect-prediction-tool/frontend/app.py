@@ -647,7 +647,7 @@ def _tab_training() -> None:
     if run_btn:
         import pathlib
         import preprocessing as pp_mod
-        import models as ml_mod
+        import ml_models as ml_mod
         progress = st.progress(0, "Initializing pipeline...")
         log_box  = st.empty()
 
@@ -717,8 +717,8 @@ def _tab_training() -> None:
         })
         st.dataframe(
             lb_show.style.format({
-                "AUC":":.3f","Recall":":.3f","F1":":.3f",
-                "Precision":":.3f","Accuracy":":.3f","CV-AUC":":.3f","Time(s)":":.1f",
+                "AUC":"{:.3f}","Recall":"{:.3f}","F1":"{:.3f}",
+                "Precision":"{:.3f}","Accuracy":"{:.3f}","CV-AUC":"{:.3f}","Time(s)":"{:.1f}",
             }).background_gradient(subset=["AUC","Recall"], cmap="YlOrRd"),
             use_container_width=True, hide_index=True,
         )
@@ -775,7 +775,7 @@ def _tab_evaluation() -> None:
             z=cm[::-1],
             x=["Predicted Clean", "Predicted Defective"],
             y=["Actual Defective", "Actual Clean"],
-            colorscale=[[0, PANEL],[0.5, f"{BRAND}88"],[1, BRAND]],
+            colorscale=[[0, PANEL],[1, BRAND]],
             text=cm[::-1],
             texttemplate="<b>%{text}</b>",
             textfont=dict(size=20, color=INK),
@@ -829,12 +829,18 @@ def _tab_evaluation() -> None:
                 unsafe_allow_html=True)
     cats = ["AUC","Recall","F1","Precision","Accuracy"]
     fig3 = go.Figure()
+    
+    def _hex_to_rgba(h, a):
+        h = h.lstrip('#')
+        if len(h) != 6: return f"rgba(47, 157, 138, {a})" # fallback brand
+        return f"rgba({int(h[:2],16)}, {int(h[2:4],16)}, {int(h[4:],16)}, {a})"
+
     for mname, mres in results.items():
         vals = [mres.roc_auc, mres.recall, mres.f1, mres.precision, mres.accuracy]
         fig3.add_trace(go.Scatterpolar(
             r=vals + [vals[0]],
             theta=cats + [cats[0]],
-            fill="toself", fillcolor=_model_color(mname) + "22",
+            fill="toself", fillcolor=_hex_to_rgba(_model_color(mname), 0.15),
             line=dict(color=_model_color(mname), width=2),
             name=mname,
         ))

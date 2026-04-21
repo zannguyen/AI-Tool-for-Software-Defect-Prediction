@@ -1004,30 +1004,22 @@ lime>=0.2.0
 
 ### 2026-04-21 (session hiện tại)
 - **[ARCH] Refactor app.py sang 5 Tabs**: Đại tu kiến trúc layout từ 3-column sang 5 chức năng (Workspace, Dashboard, Training, Evaluation, Prediction).
-- **[NEW] AI Risk Assessment (Groq)**: Thêm ackend/ai_reviewer.py. Tích hợp LLM phân tích deep-dive các metric code và hotspots xuất báo cáo Markdown real-time thay cho dự đoán ML truyền thống vốn không dùng chung một định dạng dataset.
-- **[FIX] Importlib module reload**: Sửa lỗi AttributeError dính tới dataclasses do việc tải module động, bằng cách dùng standard import khi setup sys.path.
-- **[DOC] CLAUDE.md rewrite**: Cập nhật toàn bộ để phản ánh cấu trúc thực tế sau refactor. Phát hiện và ghi lại các bugs/inconsistencies.
+- **[NEW] AI Risk Assessment (Groq)**: Thêm ackend/ai_reviewer.py. Tích hợp LLM (Llama 3.3, Mixtral) phân tích codebase xuất báo cáo Markdown chuyên sâu thay cho dự đoán ML.
+- **[FIX] Importlib module reload & Naming Conflict**: 
+  - Đổi tên ackend/models.py thành ackend/ml_models.py để tránh xung đột cấu trúc.
+  - Thay thế importlib.util thành import tiêu chuẩn để tránh lỗi AttributeError với class ModelTrainer (dataclass).
+- **[FIX] Plotly & Pandas UI Bugs**:
+  - Sửa crash Plotly Heatmap (do parser nhận dải màu có mã Hex 8 chữ số bị lỗi). Chuyển về linear gradient cơ bản.
+  - Sửa lỗi trong biểu đồ Scatterpolar khai báo illcolor bằng cách thêm helper custom _hex_to_rgba để áp dụng độ trong suốt tiêu chuẩn 
+gba().
+  - Sửa lỗi format string :.3f của bảng dataframe (pandas styler.format yêu cầu {:.3f}).
+- **[DOC] CLAUDE.md rewrite**: Cập nhật toàn bộ để phản ánh kiến trúc và bugs đã fixed.
 - **[NEW] ackend/preprocessing.py rewrite toàn bộ**: Pipeline 8-stage cho NASA SDP datasets.
-rewrite**: Cập nhật toàn bộ để phản ánh cấu trúc thực tế sau refactor. Phát hiện và ghi lại các bugs/inconsistencies.
-- **[NEW] `backend/preprocessing.py` rewrite toàn bộ**: Pipeline 8-stage cho NASA SDP datasets.
-  - `load_data()`: auto-detect ARFF / CSV, parse robust, normalise label → 0/1
-  - `DataCleaner`: duplicate removal (phát hiện 40% KC1+KC2 là duplicate!), LOC>0 integrity, median imputation, IQR×3 clipping, zero-variance drop
-  - `FeatureEngineer`: log1p transforms, interaction × ratio features, 2-stage MI+RF feature selection
-  - `handle_imbalance()`: SMOTE / ADASYN / none với fallback tự động
-  - `SDPPreprocessor`: class master pipeline với `fit_transform()` + `transform_new()`
-  - Backward-compatible wrappers giữ nguyên API cũ (`load_dataset`, `extract_features`, `split_data`, `get_data_summary`)
-- **[NEW] `backend/models.py` rewrite toàn bộ**: 7 models + 2 ensembles, Optuna tuning, class `ModelTrainer`.
-  - XGBoost, LightGBM (cài mới), Optuna hyperparameter tuning
-  - VotingClassifier (soft) + StackingClassifier (LR meta-learner)
-  - Kết quả: Stacking AUC=0.772, best Recall=0.707 (MLP)
-  - `save_all_models()` / `load_model()` / `list_saved_models()` qua joblib
-- **[NEW] `backend/explainability.py`** (file mới): XAI module đầy đủ.
-  - SHAP: TreeExplainer (RF/XGB/LGB), LinearExplainer (LR), PermutationExplainer (fallback)
-  - Global: `plot_global_importance()`, `plot_beeswarm()`, `plot_feature_heatmap()`
-  - Local: `plot_local_waterfall()`, `plot_lime_explanation()`, `plot_dependency()`
-  - `generate_narrative()`: text markdown giải thích rủi ro cho non-technical users
-  - Multi-model: `plot_shap_comparison()`, `plot_prediction_breakdown()`
-- **[UPDATE] `requirements.txt`**: Thêm xgboost, lightgbm, optuna, shap, lime
+  - load_data(): auto-detect ARFF / CSV, parse robust.
+  - DataCleaner: duplicate removal (phát hiện 40% KC1+KC2 là duplicate!).
+  - FeatureEngineer: log1p transforms, 2-stage MI+RF feature selection.
+- **[NEW] ackend/ml_models.py rewrite toàn bộ**: Tên cũ models.py. Gồm 7 models + 2 ensembles, Optuna tuning, ModelTrainer.
+
 
 ### 2026-04-20 (session trước)
 - **[FIX] Layout overlap**: Chuyển từ `position:fixed` sang `st.columns([1.3, 3.0, 1.5])` + `st.container(height=800)`.
