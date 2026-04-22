@@ -32,6 +32,7 @@ from backend.api import (           # noqa: E402
     build_entries_from_files,
     build_entries_from_zip,
     get_risk_label,
+    render_code_line,
     render_file_code,
     run_analysis,
 )
@@ -240,6 +241,9 @@ def _apply_extra_css():
 # HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 
+import re as _re
+
+
 def _fmt_risk(score: float) -> str:
     label, _ = get_risk_label(score)
     return label
@@ -249,6 +253,20 @@ def _risk_badge(score: float) -> str:
     label = _fmt_risk(score).lower()
     cls = f"risk-badge-{label}"
     return f"<span class='{cls}'>{label.upper()} {score*100:.0f}%</span>"
+
+
+def _extract_code_block(text: str) -> str:
+    """Extract the first fenced code block from a markdown string."""
+    m = _re.search(r"```(?:\w+)?\n(.*?)```", text, _re.DOTALL)
+    return m.group(1).strip() if m else ""
+
+
+def _update_file_content(fname: str, new_content: str) -> None:
+    """Replace content of a file entry in session_state.files."""
+    for entry in st.session_state.files:
+        if entry["name"] == fname:
+            entry["content"] = new_content
+            break
 
 
 def _plotly_base() -> dict:
@@ -276,6 +294,232 @@ def _model_color(name: str) -> str:
         "Gradient Boosting":    "#f4a261",
     }
     return palette.get(name, "#7ec6ff")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AI CODE FIXER (rendered inside workspace center column)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _get_line_hotspots(active: dict) -> list[dict]:
+    """Lấy danh sách các dòng có risk HIGH hoặc MED từ line_risks (cùng nguồn với code viewer).
+
+    Trả về list[dict] với keys: line_no, code, severity, reason
+    """
+    line_risks: dict = active.get("line_risks", {})
+    hotspots = []
+    for line_no, risk_data in sorted(line_risks.items()):
+        if isinstance(risk_data, (tuple, list)) and len(risk_data) == 2:
+            risk, reason = risk_data
+        else:
+            risk, reason = risk_data, ""
+        if risk in ("high", "med"):
+            lines = active.get("content", "").splitlines()
+            code = lines[line_no - 1].strip()[:120] if 0 < line_no <= len(lines) else ""
+            hotspots.append({
+                "line_no":  line_no,
+                "code":     code,
+                "severity": "HIGH" if risk == "high" else "MEDIUM",
+                "reason":   reason,
+            })
+    return hotspots
+
+
+def _render_code_fixer(active: dict) -> None:
+    """Render AI-powered fix panel — hotspot count matches the code viewer highlights."""
+    try:
+        ai_mod = _load_ai_reviewer()
+    except Exception:
+        return
+
+    api_key  = st.session_state.get("groq_api_key", "").strip()
+    model_id = st.session_state.get("groq_model", "llama-3.3-70b-versatile")
+    lang     = st.session_state.get("groq_lang", "vi")
+
+    # Use line_risks (same source as the code viewer highlights)
+    hotspots      = _get_line_hotspots(active)
+    fname         = active["name"]
+    file_lang     = active["lang"][2]
+    content_lines = active.get("content", "").splitlines()
+
+    n_high = sum(1 for h in hotspots if h["severity"] == "HIGH")
+    n_med  = sum(1 for h in hotspots if h["severity"] == "MEDIUM")
+
+    st.divider()
+    # ── header row ──────────────────────────────────────────────────────────
+    hcol, bcol = st.columns([3, 1])
+    with hcol:
+        badge_color = DANGER if n_high else (WARN if n_med else SAFE)
+        count_text  = (
+            f"{n_high} HIGH, {n_med} MEDIUM" if hotspots
+            else "no risky patterns"
+        )
+        st.markdown(
+            f'<p class="ds-section-header" style="color:{badge_color}">'
+            f'🔧 AI Code Fixer — {len(hotspots)} risky pattern(s) detected'
+            f' <span style="font-weight:400;font-size:.72rem;opacity:.8">({count_text})</span></p>',
+            unsafe_allow_html=True,
+        )
+    with bcol:
+        if not api_key:
+            st.caption("💡 Enter Groq API key in Prediction tab")
+        elif hotspots:
+            if st.button("🔧 Fix All Issues", key=f"fix_all_btn_{fname}",
+                         type="primary", use_container_width=True):
+                # Build ai_reviewer hotspot list for fix_all_file
+                ctx = ai_mod.build_file_context(active)
+                with st.spinner("AI đang sửa toàn bộ file…"):
+                    try:
+                        rv = ai_mod.GroqReviewer(api_key=api_key, model=model_id)
+                        result = rv.fix_all_file(
+                            content=active.get("content", ""),
+                            hotspots=ctx.hotspots or [
+                                type("H", (), h)() for h in hotspots
+                            ],
+                            file_language=file_lang,
+                            language=lang,
+                        )
+                        st.session_state[f"fix_all_{fname}"] = result
+                        st.session_state[f"fix_all_status_{fname}"] = "proposed"
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Lỗi Groq: {exc}")
+
+    # ── fix-all proposal ────────────────────────────────────────────────────
+    if st.session_state.get(f"fix_all_status_{fname}") == "proposed":
+        proposal_all = st.session_state.get(f"fix_all_{fname}", "")
+        with st.expander("📋 Fix All — Đề xuất AI", expanded=True):
+            st.markdown(proposal_all)
+            ca, cb = st.columns(2)
+            with ca:
+                if st.button("✅ Chấp nhận tất cả", key=f"accept_all_{fname}",
+                             type="primary", use_container_width=True):
+                    fixed = _extract_code_block(proposal_all)
+                    if fixed:
+                        _update_file_content(fname, fixed)
+                        st.session_state[f"fix_all_status_{fname}"] = "accepted"
+                        st.success("✅ Đã áp dụng toàn bộ thay đổi!")
+                        st.rerun()
+                    else:
+                        st.warning("Không trích xuất được code từ đề xuất. Hãy copy thủ công.")
+            with cb:
+                if st.button("❌ Huỷ bỏ", key=f"cancel_all_{fname}",
+                             use_container_width=True):
+                    st.session_state.pop(f"fix_all_{fname}", None)
+                    st.session_state[f"fix_all_status_{fname}"] = "cancelled"
+                    st.rerun()
+
+    if st.session_state.get(f"fix_all_status_{fname}") == "accepted":
+        st.success("✅ Fix All đã được chấp nhận và áp dụng vào file.")
+
+    if not hotspots:
+        st.markdown(
+            f'<div style="background:{SAFE}18;border:1px solid {SAFE}44;border-radius:8px;'
+            f'padding:10px 14px;font-size:.85rem;color:{SAFE}">'
+            f'✅ Không phát hiện đoạn code nguy hiểm trong file này.</div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    if not api_key:
+        st.info("💡 Nhập Groq API key trong tab **Prediction** để bật tính năng sửa code bằng AI.")
+        return
+
+    # ── per-hotspot fix cards ────────────────────────────────────────────────
+    for h in hotspots:
+        line_no  = h["line_no"]
+        code     = h["code"]
+        severity = h["severity"]
+        reason   = h["reason"]
+        seg_key  = f"fix_seg_{fname}_{line_no}"
+        stat_key = f"fix_seg_status_{fname}_{line_no}"
+        status   = st.session_state.get(stat_key, "")
+
+        sev_color = DANGER if severity == "HIGH" else WARN
+
+        # Context snippet (±3 lines around hotspot)
+        c_start = max(0, line_no - 4)
+        c_end   = min(len(content_lines), line_no + 3)
+        snippet = "\n".join(content_lines[c_start:c_end])
+
+        # Card header
+        st.markdown(
+            f'<div style="background:{sev_color}12;border:1px solid {sev_color}44;'
+            f'border-left:4px solid {sev_color};border-radius:8px;'
+            f'padding:8px 14px;margin-top:10px">'
+            f'<span style="font-weight:700;font-size:.8rem;color:{sev_color}">'
+            f'[{severity}] Line {line_no}</span>'
+            f'<span style="font-size:.75rem;color:{MUTED}"> — {reason}</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        st.code(snippet, language=file_lang.lower())
+
+        # Fix button (hidden after accepted)
+        if status != "accepted":
+            fix_col, _ = st.columns([1, 3])
+            with fix_col:
+                if st.button(f"🔧 Fix line {line_no}",
+                             key=f"fix_seg_btn_{fname}_{line_no}"):
+                    with st.spinner(f"AI đang sửa line {line_no}…"):
+                        try:
+                            rv = ai_mod.GroqReviewer(api_key=api_key, model=model_id)
+                            ctx_lines = content_lines[c_start:c_end]
+                            result = rv.fix_segment(
+                                line_code=code,
+                                line_no=line_no - c_start,
+                                pattern=severity,
+                                reason=reason,
+                                file_language=file_lang,
+                                context_lines=ctx_lines,
+                                language=lang,
+                            )
+                            st.session_state[seg_key]  = result
+                            st.session_state[stat_key] = "proposed"
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Lỗi Groq: {exc}")
+
+        # Proposal panel with Accept / Cancel
+        if status == "proposed":
+            proposal = st.session_state.get(seg_key, "")
+            with st.container(border=True):
+                st.markdown(
+                    f'<p style="font-size:.75rem;font-weight:700;'
+                    f'color:{BRAND};margin-bottom:4px">💡 Đề xuất sửa từ AI</p>',
+                    unsafe_allow_html=True,
+                )
+                st.markdown(proposal)
+                pa, pb = st.columns(2)
+                with pa:
+                    if st.button("✅ Chấp nhận",
+                                 key=f"accept_seg_{fname}_{line_no}",
+                                 type="primary", use_container_width=True):
+                        fixed = _extract_code_block(proposal)
+                        if fixed:
+                            new_lines = content_lines.copy()
+                            if 0 <= line_no - 1 < len(new_lines):
+                                fixed_lines = fixed.splitlines()
+                                new_lines = (
+                                    new_lines[:line_no - 1]
+                                    + fixed_lines
+                                    + new_lines[line_no:]
+                                )
+                            _update_file_content(fname, "\n".join(new_lines))
+                            st.session_state[stat_key] = "accepted"
+                            st.success(f"✅ Đã áp dụng fix cho line {line_no}")
+                            st.rerun()
+                        else:
+                            st.warning("Không trích xuất được code. Copy thủ công từ đề xuất trên.")
+                with pb:
+                    if st.button("❌ Huỷ bỏ",
+                                 key=f"cancel_seg_{fname}_{line_no}",
+                                 use_container_width=True):
+                        st.session_state.pop(seg_key, None)
+                        st.session_state[stat_key] = "cancelled"
+                        st.rerun()
+
+        elif status == "accepted":
+            st.success(f"✅ Line {line_no} — đã được sửa và áp dụng.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -384,9 +628,160 @@ def _tab_workspace() -> None:
             k4.metric("Risk Score", f"{active['risk_score']*100:.1f}%")
 
         # ── code viewer ────────────────────────────────────────────────────
-        code_html = render_file_code(active, analyzed)
-        st.markdown(f'<div class="ds-code-box">{code_html}</div>',
-                    unsafe_allow_html=True)
+        if not analyzed:
+            code_html = render_file_code(active, analyzed)
+            st.markdown(f'<div class="ds-code-box">{code_html}</div>',
+                        unsafe_allow_html=True)
+        else:
+            with st.container(height=560, border=False):
+                # AI Toolbar above code viewer
+                hotspots = _get_line_hotspots(active)
+                fname = active["name"]
+                api_key  = st.session_state.get("groq_api_key", "").strip()
+                model_id = st.session_state.get("groq_model", "llama-3.3-70b-versatile")
+                lang     = st.session_state.get("groq_lang", "vi")
+
+                n_high = sum(1 for h in hotspots if h["severity"] == "HIGH")
+                n_med  = sum(1 for h in hotspots if h["severity"] == "MEDIUM")
+                hcol, bcol = st.columns([3, 1])
+                with hcol:
+                    badge_color = DANGER if n_high else (WARN if n_med else SAFE)
+                    count_text  = f"{n_high} HIGH, {n_med} MEDIUM" if hotspots else "no risky patterns"
+                    st.markdown(
+                        f'<p class="ds-section-header" style="color:{badge_color}">'
+                        f'🔧 AI Code Fixer — {len(hotspots)} risky pattern(s) detected'
+                        f' <span style="font-weight:400;font-size:.72rem;opacity:.8">({count_text})</span></p>',
+                        unsafe_allow_html=True,
+                    )
+                with bcol:
+                    fix_all_disabled = not (api_key and hotspots)
+                    if st.button(
+                        "🚀 Sửa tất cả lỗi",
+                        key=f"fix_all_btn_{fname}",
+                        type="primary",
+                        use_container_width=True,
+                        disabled=fix_all_disabled,
+                        help="Tự động chạy fix cho tất cả dòng có cảnh báo trong file này",
+                    ):
+                        ai_mod = _load_ai_reviewer()
+                        with st.spinner("AI đang tự động sửa tất cả hotspot trong file…"):
+                            try:
+                                rv = ai_mod.GroqReviewer(api_key=api_key, model=model_id)
+                                content_lines = active.get("content", "").splitlines()
+                                file_lang = active["lang"][2]
+                                for h in hotspots:
+                                    line_no = h["line_no"]
+                                    seg_stat_key = f"fix_seg_status_{fname}_{line_no}"
+                                    if st.session_state.get(seg_stat_key) == "accepted":
+                                        continue
+
+                                    c_start = max(0, line_no - 4)
+                                    c_end   = min(len(content_lines), line_no + 3)
+                                    ctx_lines = content_lines[c_start:c_end]
+                                    line_text = content_lines[line_no - 1] if 0 < line_no <= len(content_lines) else h.get("code", "")
+                                    result = rv.fix_segment(
+                                        line_code=line_text,
+                                        line_no=line_no - c_start,
+                                        pattern=h["severity"],
+                                        reason=h["reason"],
+                                        file_language=file_lang,
+                                        context_lines=ctx_lines,
+                                        language=lang,
+                                    )
+                                    st.session_state[f"fix_seg_{fname}_{line_no}"] = result
+                                    st.session_state[seg_stat_key] = "proposed"
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Lỗi Groq: {exc}")
+
+                    if not api_key:
+                        st.caption("💡 Enter Groq API key in Prediction tab")
+
+                # INTERLEAVED CODE VIEWER
+                content_lines = active.get("content", "").splitlines()
+                line_risks = active.get('line_risks', {})
+                ext = active.get('ext', '')
+                file_lang = active["lang"][2]
+                ai_mod = _load_ai_reviewer()
+
+                # Iterate lines and break for hotspots
+                current_html = ""
+                for idx, line in enumerate(content_lines):
+                    num = idx + 1
+                    risk_data = line_risks.get(num)
+
+                    if isinstance(risk_data, (tuple, list)) and len(risk_data) == 2:
+                        risk, reason = risk_data
+                    else:
+                        risk = risk_data
+                        reason = ''
+
+                    current_html += render_code_line(line, num, risk, reason, ext)
+
+                    # If this line is a hotspot, flush HTML and render inline Fix UI
+                    hotspot = next((h for h in hotspots if h["line_no"] == num), None)
+                    if hotspot:
+                        if current_html:
+                            st.markdown(f'<div class="ds-code-fragment">{current_html}</div>', unsafe_allow_html=True)
+                            current_html = ""
+
+                        # RENDER INLINE FIX UI
+                        seg_key  = f"fix_seg_{fname}_{num}"
+                        stat_key = f"fix_seg_status_{fname}_{num}"
+                        status   = st.session_state.get(stat_key, "")
+
+                        if status != "accepted":
+                            fix_col, _ = st.columns([1, 4])
+                            with fix_col:
+                                if st.button(f"🔧 Fix line {num}", key=f"inline_fix_btn_{fname}_{num}"):
+                                    with st.spinner(f"AI đang sửa line {num}…"):
+                                        try:
+                                            rv = ai_mod.GroqReviewer(api_key=api_key, model=model_id)
+                                            c_start = max(0, num - 4)
+                                            c_end   = min(len(content_lines), num + 3)
+                                            result = rv.fix_segment(
+                                                line_code=line,
+                                                line_no=num - c_start,
+                                                pattern=hotspot["severity"],
+                                                reason=reason,
+                                                file_language=file_lang,
+                                                context_lines=content_lines[c_start:c_end],
+                                                language=lang,
+                                            )
+                                            st.session_state[seg_key]  = result
+                                            st.session_state[stat_key] = "proposed"
+                                            st.rerun()
+                                        except Exception as exc:
+                                            st.error(f"Lỗi Groq: {exc}")
+
+                        if status == "proposed":
+                            proposal = st.session_state.get(seg_key, "")
+                            with st.container(border=True):
+                                st.markdown(f'<p style="font-size:.75rem;font-weight:700;color:{BRAND};margin-bottom:4px">💡 Đề xuất AI</p>', unsafe_allow_html=True)
+                                st.markdown(proposal)
+                                pa, pb = st.columns(2)
+                                with pa:
+                                    if st.button("✅ Chấp nhận code", key=f"accept_seg_{fname}_{num}", type="primary", use_container_width=True):
+                                        fixed = _extract_code_block(proposal)
+                                        if fixed:
+                                            new_lines = content_lines.copy()
+                                            if 0 <= num - 1 < len(new_lines):
+                                                fixed_lines = fixed.splitlines()
+                                                new_lines = new_lines[:num - 1] + fixed_lines + new_lines[num:]
+                                            _update_file_content(fname, "\n".join(new_lines))
+                                            st.session_state[stat_key] = "accepted"
+                                            st.success(f"✅ Đã áp dụng code mới cho dòng {num}")
+                                            st.rerun()
+                                with pb:
+                                    if st.button("❌ Huỷ bỏ", key=f"cancel_seg_{fname}_{num}", use_container_width=True):
+                                        st.session_state.pop(seg_key, None)
+                                        st.session_state[stat_key] = "cancelled"
+                                        st.rerun()
+                        elif status == "accepted":
+                            st.success(f"✅ Đã áp dụng đoạn code do AI sinh ra.", icon="✅")
+
+                if current_html:
+                    st.markdown(f'<div class="ds-code-fragment">{current_html}</div>', unsafe_allow_html=True)
 
     # ── RIGHT: insights panel ──────────────────────────────────────────────
     with right:

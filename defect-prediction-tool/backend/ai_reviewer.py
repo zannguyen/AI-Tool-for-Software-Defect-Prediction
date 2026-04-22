@@ -197,6 +197,17 @@ Be concrete: reference specific line numbers, metric values, and code patterns.
 Avoid generic advice — every recommendation must be traceable to a specific finding."""
 
 
+FIX_SYSTEM_PROMPT = """You are an expert software engineer specializing in secure, maintainable code.
+Your task: fix risky or defect-prone code segments with minimal, targeted changes.
+Rules:
+- Return ONLY what is asked: fixed code + brief explanation.
+- Preserve original indentation, variable names, and overall logic flow.
+- For line-level fixes: return replacement code for just that section.
+- For full-file fixes: return the COMPLETE file with ALL fixes applied.
+- Add a short inline comment on each changed line explaining the fix.
+- Never remove existing functionality unless it IS the defect."""
+
+
 def build_analysis_prompt(ctx: FileRiskContext, language: str = "vi") -> str:
     """
     Xây dựng user prompt chi tiết cho LLM.
@@ -460,6 +471,88 @@ Which metrics, if improved, would have the highest impact on overall quality.
             delta = chunk.choices[0].delta.content
             if delta:
                 yield delta
+
+    # ── single-segment fix ────────────────────────────────────────────────
+    def fix_segment(
+        self,
+        line_code: str,
+        line_no: int,
+        pattern: str,
+        reason: str,
+        file_language: str,
+        context_lines: list,
+        language: str = "vi",
+    ) -> str:
+        """Generate a targeted fix for one risky code line."""
+        ctx_block = "\n".join(
+            f"{'>>>' if i == line_no - 1 else '   '} {ln}"
+            for i, ln in enumerate(context_lines)
+        )
+        lang_note = (
+            "Gi\u1ea3i th\xedch b\u1eb1ng Ti\u1ebfng Vi\u1ec7t."
+            if language == "vi" else "Explain in English."
+        )
+        prompt = (
+            f"Fix this risky code line. {lang_note}\n\n"
+            f"**Risky line {line_no}:** `{line_code}`\n"
+            f"**Issue:** [{pattern}] \u2014 {reason}\n"
+            f"**Language:** {file_language}\n\n"
+            f"**Context** (>>> marks the risky line):\n"
+            f"```{file_language.lower()}\n{ctx_block}\n```\n\n"
+            f"Respond with:\n\n"
+            f"**Fix:**\n```{file_language.lower()}\n<replacement code>\n```\n\n"
+            f"**Explanation:** <1\u20132 sentences>"
+        )
+        resp = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": FIX_SYSTEM_PROMPT},
+                {"role": "user",   "content": prompt},
+            ],
+            max_tokens=512,
+            temperature=0.15,
+        )
+        return resp.choices[0].message.content or ""
+
+    # ── full-file fix ─────────────────────────────────────────────────────
+    def fix_all_file(
+        self,
+        content: str,
+        hotspots: list,
+        file_language: str,
+        language: str = "vi",
+    ) -> str:
+        """Generate fixes for ALL risky hotspots in a file at once."""
+        issues = "\n".join(
+            f"  - Line {h.line_no} [{h.severity}]: `{h.code[:80]}` \u2192 {h.reason}"
+            for h in hotspots[:20]
+        )
+        lang_note = (
+            "Gi\u1ea3i th\xedch ph\u1ea7n 'Changes Made' b\u1eb1ng Ti\u1ebfng Vi\u1ec7t."
+            if language == "vi" else "Explain in English."
+        )
+        lines = content.splitlines()
+        code_block = "\n".join(lines[:250])
+        if len(lines) > 250:
+            code_block += f"\n# ... ({len(lines) - 250} more lines \u2014 only fix visible issues)"
+        prompt = (
+            f"Fix ALL risky patterns below. {lang_note}\n\n"
+            f"## Issues to Fix ({len(hotspots)} found)\n{issues}\n\n"
+            f"## Source Code\n```{file_language.lower()}\n{code_block}\n```\n\n"
+            f"Return:\n"
+            f"**Fixed Code:**\n```{file_language.lower()}\n<complete fixed source>\n```\n\n"
+            f"**Changes Made:**\n- Line X: <what changed>\n"
+        )
+        resp = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": FIX_SYSTEM_PROMPT},
+                {"role": "user",   "content": prompt},
+            ],
+            max_tokens=4096,
+            temperature=0.15,
+        )
+        return resp.choices[0].message.content or ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────

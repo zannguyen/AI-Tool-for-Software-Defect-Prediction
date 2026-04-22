@@ -169,6 +169,31 @@ def apply_global_styles(theme: str = "dark") -> None:
             color: #d4dde8;
         }
 
+        .ds-code-fragment {
+            background: #0f1720;
+            color: #d4dde8;
+            padding: 4px 0;
+            border-left: 1px solid #17222a;
+            border-right: 1px solid #17222a;
+        }
+        .ds-code-fragment.top {
+            border-top: 1px solid #17222a;
+            border-top-left-radius: 10px;
+            border-top-right-radius: 10px;
+            padding-top: 8px;
+        }
+        .ds-code-fragment.bottom {
+            border-bottom: 1px solid #17222a;
+            border-bottom-left-radius: 10px;
+            border-bottom-right-radius: 10px;
+            padding-bottom: 8px;
+        }
+        .ds-code-fragment.single {
+            border: 1px solid #17222a;
+            border-radius: 10px;
+            padding: 8px 0;
+        }
+
         .vs-cl {
             position: relative;
             display: flex;
