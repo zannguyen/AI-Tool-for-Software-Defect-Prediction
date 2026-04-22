@@ -1,5 +1,15 @@
 # DefectSight — AI Software Defect Prediction Tool
-> Cập nhật lần cuối: 2026-04-21
+> Cập nhật lần cuối: 2026-04-22
+
+---
+
+## 🆕 Cập nhật gần đây (Release Notes)
+
+- **Dark/Light Theme Toggle:** Tích hợp nút chuyển đổi chế độ Sáng/Tối trực quan bên cạnh Topbar Header. Quản lý Style linh hoạt thông qua hệ thống phân cực thông minh: State (`st.session_state.theme`) và CSS Variables root (`ui/styles.py`).
+- **UI Refinement & 3-Column Layout:** Nâng cấp toàn diện giao diện Streamlit từ dạng xếp tầng dọc thành **3 cột chuẩn IDE** (Left Sidebar, Center Code Editor, Right Insights). Xử lý triệt để hiện tượng layout đè lấp.
+- **AI Inline Explanations:** Bổ sung hiển thị `Inline Tooltip` thông minh trên từng dòng mã nguồn bị đánh dấu rủi ro, cho phép phân tích nguyên nhân ngay tại chỗ.
+- **Groq LLM Risk Assessment:** Tích hợp phân tích mã nguồn bằng LLM siêu tốc thông qua Groq API (`backend/ai_reviewer.py`), hỗ trợ Streamlit tab mới (Prediction & Evaluation). Đưa ra các báo cáo nguy cơ chi tiết định dạng Markdown.
+- **Codebase Clean-up:** Xóa bỏ hoàn toàn các file script thử nghiệm hoặc rác (`_patch_prediction_tab.py`, `inspect_api.py`, v.v.) bảo đảm 100% production-ready.
 
 ---
 

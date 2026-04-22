@@ -48,15 +48,20 @@ st.set_page_config(
 )
 
 # ── design tokens ──────────────────────────────────────────────────────────
-BRAND   = "#2f9d8a"
-DANGER  = "#b8323d"
-WARN    = "#e2a44c"
-SAFE    = "#2e6f44"
-PANEL   = "#171d24"
-BG      = "#0f1318"
-INK     = "#e6edf6"
-MUTED   = "#9aabbe"
-LINE    = "#2c3643"
+if "theme" not in st.session_state:
+    st.session_state.theme = "dark"
+
+_is_dark = st.session_state.theme == "dark"
+
+BRAND   = "#2f9d8a" if _is_dark else "#0f766e"
+DANGER  = "#b8323d" if _is_dark else "#dc2626"
+WARN    = "#e2a44c" if _is_dark else "#d97706"
+SAFE    = "#2e6f44" if _is_dark else "#16a34a"
+PANEL   = "#171d24" if _is_dark else "#ffffff"
+BG      = "#0f1318" if _is_dark else "#f3f6fa"
+INK     = "#e6edf6" if _is_dark else "#1e293b"
+MUTED   = "#9aabbe" if _is_dark else "#64748b"
+LINE    = "#2c3643" if _is_dark else "#e2e8f0"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CACHING — heavy operations never run twice for the same input
@@ -1218,7 +1223,7 @@ def _render_topbar() -> None:
 
 def main() -> None:
     ensure_state()
-    apply_global_styles()
+    apply_global_styles(st.session_state.theme)
     _apply_extra_css()
 
     # init extra state keys
@@ -1227,7 +1232,20 @@ def main() -> None:
         if key not in st.session_state:
             st.session_state[key] = None if key != "trained" else False
 
-    _render_topbar()
+    col1, col2 = st.columns([10, 1])
+    with col1:
+        _render_topbar()
+    with col2:
+        st.write("<div style='height: 24px;'></div>", unsafe_allow_html=True)
+        def toggle_cb():
+            st.session_state.theme = "light" if st.session_state.theme == "dark" else "dark"
+            
+        st.toggle(
+            "🌙 Dark Mode", 
+            value=(st.session_state.theme == "dark"), 
+            on_change=toggle_cb, 
+            key="theme_toggle_btn"
+        )
 
     # ── main tab bar ───────────────────────────────────────────────────────
     tab_workspace, tab_dashboard, tab_training, tab_evaluation, tab_prediction = st.tabs([

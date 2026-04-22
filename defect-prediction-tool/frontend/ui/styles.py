@@ -3,13 +3,31 @@
 import streamlit as st
 
 
-def apply_global_styles() -> None:
-    st.markdown(
+def apply_global_styles(theme: str = "dark") -> None:
+    if theme == "light":
+        css_vars = """
+            --bg: #f3f6fa;
+            --panel: #ffffff;
+            --panel-soft: #f8fafc;
+            --ink: #1e293b;
+            --ink-muted: #64748b;
+            --line: #e2e8f0;
+            --brand: #0f766e;
+            --brand-soft: #ccfbf1;
+            --danger: #dc2626;
+            --warn: #d97706;
+            --safe: #16a34a;
+            
+            --bg-grad-1: #e2e8f0;
+            --bg-grad-2: #cbd5e1;
+            --topbar-bg: linear-gradient(130deg, #0f766e, #14b8a6 58%, #2dd4bf);
+            --topbar-text: #ffffff;
+            
+            --scroll-thumb: #cbd5e1;
+            --scroll-thumb-hover: #94a3b8;
         """
-        <style>
-        @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
-
-        :root {
+    else:
+        css_vars = """
             --bg: #0f1318;
             --panel: #171d24;
             --panel-soft: #1f2731;
@@ -21,12 +39,23 @@ def apply_global_styles() -> None:
             --danger: #b8323d;
             --warn: #ad7b2b;
             --safe: #2e6f44;
-        }
+            
+            --bg-grad-1: #1d2530;
+            --bg-grad-2: #172c38;
+            --topbar-bg: linear-gradient(130deg, #1d2833, #1f5d72 58%, #255b4f);
+            --topbar-text: #ffffff;
+            
+            --scroll-thumb: #2c3643;
+            --scroll-thumb-hover: #3e4a59;
+        """
+
+    base_css = """
+        @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
 
         .stApp {
             background:
-                radial-gradient(1200px 430px at 16% -7%, #1d2530 0%, rgba(29,37,48,0) 62%),
-                radial-gradient(980px 420px at 100% 0%, #172c38 0%, rgba(23,44,56,0) 58%),
+                radial-gradient(1200px 430px at 16% -7%, var(--bg-grad-1) 0%, transparent 62%),
+                radial-gradient(980px 420px at 100% 0%, var(--bg-grad-2) 0%, transparent 58%),
                 var(--bg);
             color: var(--ink);
             font-family: 'Manrope', sans-serif;
@@ -46,8 +75,8 @@ def apply_global_styles() -> None:
         }
 
         .ds-topbar {
-            background: linear-gradient(130deg, #1d2833, #1f5d72 58%, #255b4f);
-            color: #fff;
+            background: var(--topbar-bg);
+            color: var(--topbar-text);
             border-radius: 16px;
             padding: 16px 18px;
             box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
@@ -129,6 +158,7 @@ def apply_global_styles() -> None:
             margin-top: 2px;
         }
 
+        /* Note: Always keeping code box dark for perfect syntax highlighting visibility */
         .ds-code-box {
             border: 1px solid #17222a;
             border-radius: 10px;
@@ -136,9 +166,11 @@ def apply_global_styles() -> None:
             background: #0f1720;
             max-height: 58vh;
             box-shadow: inset 0 0 0 1px rgba(255,255,255,.02);
+            color: #d4dde8;
         }
 
         .vs-cl {
+            position: relative;
             display: flex;
             align-items: flex-start;
             min-height: 21px;
@@ -209,6 +241,29 @@ def apply_global_styles() -> None:
         .num { color: #bde38a; }
         .dec { color: #8dc5ff; }
 
+        .vs-inline-err {
+            padding: 4px 10px 6px 60px;
+            font-size: 0.75rem;
+            font-family: inherit;
+            font-style: italic;
+            border-bottom: 1px solid rgba(255,255,255,0.02);
+            line-height: 1.3;
+            word-wrap: break-word;
+            white-space: pre-wrap;
+        }
+
+        .vs-inline-err.hi {
+            background-color: rgba(184,50,61,0.08);
+            border-left: 3px solid rgba(184,50,61,0.78);
+            color: #ffadb3;
+        }
+
+        .vs-inline-err.me {
+            background-color: rgba(173,123,43,0.05);
+            border-left: 3px solid rgba(173,123,43,0.74);
+            color: #ffdca1;
+        }
+
         .ds-tab-pill {
             background: #202833;
             border: 1px solid var(--line);
@@ -226,6 +281,7 @@ def apply_global_styles() -> None:
             font-weight: 700;
         }
 
+        /* Note: Also keeping log terminal dark */
         .ds-log {
             background: #131a1f;
             color: #c5d0da;
@@ -246,10 +302,11 @@ def apply_global_styles() -> None:
         .stButton > button[kind="primary"] {
             background-color: var(--brand);
             border-color: var(--brand);
+            color: white;
         }
 
         .stButton > button[kind="secondary"] {
-            border-color: #38576d;
+            border-color: var(--line);
             color: var(--ink);
         }
 
@@ -290,14 +347,16 @@ def apply_global_styles() -> None:
             height: 5px;
         }
         ::-webkit-scrollbar-thumb {
-            background: #2c3643;
+            background: var(--scroll-thumb);
             border-radius: 10px;
         }
         ::-webkit-scrollbar-thumb:hover {
-            background: #3e4a59;
+            background: var(--scroll-thumb-hover);
         }
-
-        </style>
-        """,
-        unsafe_allow_html=True,
+    """
+    
+    st.markdown(
+        "<style>\n:root {\n" + css_vars + "\n}\n" + base_css + "\n</style>", 
+        unsafe_allow_html=True
     )
+

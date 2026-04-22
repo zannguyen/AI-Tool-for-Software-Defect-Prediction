@@ -191,35 +191,82 @@ def build_entries_from_files(uploaded_files) -> list[dict]:
 # ─────────────────────────────────────────────
 # CODE ANALYSIS
 # ─────────────────────────────────────────────
-def compute_line_risks(content: str, ext: str, file_cc: int) -> dict[int, str]:
-    """Tính risk level cho từng dòng code."""
+def compute_line_risks(content: str, ext: str, file_cc: int) -> dict[int, tuple[str, str]]:
+    """Tính risk level cho từng dòng code, hỗ trợ đa ngôn ngữ."""
     risks = {}
+    is_js = ext in ('.js', '.jsx', '.ts', '.tsx')
+    
     for idx, line in enumerate(content.split('\n')):
         t = line.strip()
         num = idx + 1
         score = 0.0
+        reasons = []
+        
+        # General Checks
         if 'exec(' in t or 'eval(' in t:
             score += 0.7
-        if 'except:' == t:
-            score += 0.5
-        if 'while True:' in t:
-            score += 0.5
+            reasons.append("Sử dụng eval/exec có nguy cơ chèn mã độc (RCE).")
         if len(line) > 120:
             score += 0.3
-        if 'TODO' in t or 'FIXME' in t:
+            reasons.append("Dòng code quá dài (>120 ký tự) làm giảm khả năng đọc hiểu.")
+        if 'TODO' in t or 'FIXME' in t or 'HACK' in t:
             score += 0.2
-        if t.startswith('def ') and t.count(',') > 4:
-            score += 0.4
-        if 'if ' in t and ('and ' in t or 'or ' in t) and ':' in t:
-            score += 0.3
-        if (file_cc or 1) > 15:
-            score *= 1.4
+            reasons.append("Chứa TODO/FIXME, mã nguồn chưa hoàn thiện.")
+            
+        # Python specific
+        if ext == '.py':
+            if 'except:' == t or 'except Exception' in t:
+                score += 0.5
+                reasons.append("Bắt mọi Exception (Broad catch) che giấu lỗi hệ thống.")
+            if 'while True:' in t:
+                score += 0.5
+                reasons.append("Vòng lặp vô hạn tiềm ẩn nguy cơ treo (hang) ứng dụng.")
+            if t.startswith('def ') and t.count(',') > 4:
+                score += 0.4
+                reasons.append("Hàm nhận quá nhiều tham số (>4) phá vỡ nguyên lý thiết kế.")
+            if 'if ' in t and ('and ' in t or 'or ' in t) and ':' in t:
+                score += 0.3
+                reasons.append("Điều kiện logic rẽ nhánh phức tạp.")
+        # JS/TS specific
+        elif is_js:
+            if 'catch (' in t or 'catch{' in t:
+                score += 0.4
+                reasons.append("Khối catch bắt lỗi nhưng có thể chưa xử lý triệt để.")
+            if 'while (true)' in t or 'while(true)' in t:
+                score += 0.5
+                reasons.append("Vòng lặp vô hạn tiềm ẩn nguy cơ Timeout/Treo luồng chính.")
+            if t.startswith('function ') and t.count(',') > 4:
+                score += 0.4
+                reasons.append("Hàm nhận quá nhiều tham số (>4) phá vỡ nguyên lý thiết kế.")
+            if 'if (' in t and ('&&' in t or '||' in t):
+                score += 0.3
+                reasons.append("Điều kiện logic if-else phức tạp.")
+            if '== ' in t and '===' not in t:
+                score += 0.2
+                reasons.append("Dùng so sánh == (Loose equality) có thể gây lỗi type coercion.")
+            if 'setTimeout' in t or 'setInterval' in t:
+                score += 0.2
+                reasons.append("Sử dụng Timer có thể gây rò rỉ bộ nhớ nếu không clear.")
+        # Other languages
+        else:
+            if 'catch' in t.lower():
+                score += 0.3
+                reasons.append("Khối bắt ngoại lệ chưa rõ ràng.")
+            if 'while' in t.lower() and 'true' in t.lower():
+                score += 0.4
+                reasons.append("Nguy cơ lặp vô cực.")
+            if t.count(',') > 4 and ('(' in t and ')' in t):
+                score += 0.3
+                reasons.append("Khai báo/Gọi hàm quá nhiều tham số.")
+
+        reason_str = " | ".join(reasons)
+
         if score >= 0.55:
-            risks[num] = 'high'
+            risks[num] = ('high', reason_str)
         elif score >= 0.28:
-            risks[num] = 'med'
+            risks[num] = ('med', reason_str)
         elif t:  # dòng có nội dung → LOW (an toàn, bôi xanh nhạt)
-            risks[num] = 'low'
+            risks[num] = ('low', 'Code an toàn, không phát hiện rủi ro mức cú pháp.')
     return risks
 
 
@@ -434,10 +481,67 @@ def tokenize_py(line: str) -> str:
     return out
 
 
-def render_code_line(line: str, num: int, risk: str | None, ext: str) -> str:
-    """Render một dòng code với line number và risk badge."""
+JS_KW = {
+    'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'default',
+    'break', 'continue', 'return', 'try', 'catch', 'finally', 'throw',
+    'function', 'class', 'extends', 'super', 'new', 'this', 'typeof',
+    'instanceof', 'void', 'delete', 'in', 'of',
+    'var', 'let', 'const', 'import', 'export', 'from', 'as', 'default',
+    'async', 'await', 'yield', 'true', 'false', 'null', 'undefined', 'NaN',
+}
+
+def tokenize_js(line: str) -> str:
+    """Tokenize một dòng JS/TS cho syntax highlighting."""
+    out = ''
+    i = 0
+    n = len(line)
+    while i < n:
+        if line[i:i+2] == '//':
+            out += f'<span class="kw">{esc(line[i:])}</span>'
+            break
+        if line[i] in ('"', "'", "`"):
+            q = line[i]
+            j = i + 1
+            while j < n and line[j] != q:
+                if line[j] == '\\' and j + 1 < n:
+                    j += 1
+                j += 1
+            out += f'<span class="str">{esc(line[i:j+1])}</span>'
+            i = j + 1
+            continue
+        if line[i].isdigit():
+            j = i
+            while j < n and (line[j].isdigit() or line[j] in '.xXbBoOeE'):
+                j += 1
+            out += f'<span class="num">{esc(line[i:j])}</span>'
+            i = j
+            continue
+        if line[i].isalpha() or line[i] == '_' or line[i] == '$':
+            j = i
+            while j < n and (line[j].isalnum() or line[j] == '_' or line[j] == '$'):
+                j += 1
+            word = line[i:j]
+            nxt = line[j] if j < n else ' '
+            if word in JS_KW:
+                out += f'<span class="kw">{word}</span>'
+            elif nxt == '(':
+                out += f'<span class="fn">{word}</span>'
+            elif word[0].isupper():
+                out += f'<span class="cls">{word}</span>'
+            else:
+                out += esc(word)
+            i = j
+            continue
+        out += esc(line[i])
+        i += 1
+    return out
+
+
+def render_code_line(line: str, num: int, risk: str | None, reason: str, ext: str) -> str:
+    """Render một dòng code với line number và risk badge kèm cảnh báo lỗi ngay bên dưới."""
     cls = 'vs-cl'
     badge = ''
+    
     if risk == 'high':
         cls += ' hi'
         badge = '<span class="vs-rb hi">⚠ HIGH</span>'
@@ -447,8 +551,23 @@ def render_code_line(line: str, num: int, risk: str | None, ext: str) -> str:
     elif risk == 'low':
         cls += ' lo'
         badge = '<span class="vs-rb lo">✓ LOW</span>'
-    code = tokenize_py(line) if ext == '.py' else esc(line)
-    return f'<div class="{cls}"><span class="vs-ln">{num}</span><span class="vs-code-txt">{code}</span>{badge}</div>'
+        
+    if ext == '.py':
+        code = tokenize_py(line)
+    elif ext in ('.js', '.jsx', '.ts', '.tsx'):
+        code = tokenize_js(line)
+    else:
+        code = esc(line)
+        
+    main_div = f'<div class="{cls}"><span class="vs-ln">{num}</span><span class="vs-code-txt">{code}</span>{badge}</div>'
+    
+    inline_err = ""
+    # Chỉ in lỗi inline đối với High hoặc Medium nếu có reason cụ thể
+    if reason and risk in ('high', 'med'):
+        err_cls = "vs-inline-err hi" if risk == "high" else "vs-inline-err me"
+        inline_err = f'<div class="{err_cls}">↳ {esc(reason)}</div>'
+        
+    return main_div + inline_err
 
 
 def render_file_code(file_entry: dict, analyzed: bool) -> str:
@@ -458,8 +577,16 @@ def render_file_code(file_entry: dict, analyzed: bool) -> str:
     html = ''
     for idx, line in enumerate(file_entry['content'].split('\n')):
         num = idx + 1
-        risk = line_risks.get(num)
-        html += render_code_line(line, num, risk, ext)
+        risk_data = line_risks.get(num)
+        
+        # Backward compatibility for old cached states that stored only strings
+        if isinstance(risk_data, (tuple, list)) and len(risk_data) == 2:
+            risk, reason = risk_data
+        else:
+            risk = risk_data
+            reason = ''
+            
+        html += render_code_line(line, num, risk, reason, ext)
     return html
 
 

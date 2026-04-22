@@ -36,7 +36,7 @@ def reset_analysis_state() -> None:
     """Reset only workspace analysis state (keep training state)."""
     workspace_keys = {
         "files", "analysis", "analyzed", "logs", "active_file",
-        "tree_query", "tree_risk_filter", "tree_expanded",
+        "tree_expanded",
     }
     for key in workspace_keys:
         st.session_state[key] = DEFAULTS[key]
