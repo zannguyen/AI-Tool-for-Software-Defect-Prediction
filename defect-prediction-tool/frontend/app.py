@@ -262,10 +262,33 @@ def _extract_code_block(text: str) -> str:
 
 
 def _update_file_content(fname: str, new_content: str) -> None:
-    """Replace content of a file entry in session_state.files."""
+    """Replace content of a file entry in session_state.files and recalculate risks."""
+    import sys
+    import os
+    try:
+        from backend.api import compute_line_risks, compute_risk_score
+    except ImportError:
+        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+        from backend.api import compute_line_risks, compute_risk_score
+
     for entry in st.session_state.files:
         if entry["name"] == fname:
             entry["content"] = new_content
+            # Tính lại các rủi ro (risk) ngay lập tức để UI cập nhật (fix lỗi vòng lặp)
+            ext = entry.get("ext", ".py")
+            cc = entry.get("metrics", {}).get("cc", 1)
+            
+            new_line_risks = compute_line_risks(new_content, ext, cc)
+            entry["line_risks"] = new_line_risks
+            
+            # Tính lại risk_score tổng thể cho file (dựa trên line risks mới)
+            # Nếu không còn HIGH/MED risks từ line_risks, giảm risk_score xuống
+            high_count = sum(1 for r, _ in new_line_risks.values() if r == 'high')
+            med_count = sum(1 for r, _ in new_line_risks.values() if r == 'med')
+            
+            if high_count == 0 and med_count == 0:
+                entry["risk_score"] = min(entry.get("risk_score", 0.0), 0.1)  # LOW
+            
             break
 
 
@@ -377,6 +400,7 @@ def _render_code_fixer(active: dict) -> None:
                             ],
                             file_language=file_lang,
                             language=lang,
+                            project_summary=st.session_state.get("project_summary", ""),
                         )
                         st.session_state[f"fix_all_{fname}"] = result
                         st.session_state[f"fix_all_status_{fname}"] = "proposed"
@@ -472,6 +496,7 @@ def _render_code_fixer(active: dict) -> None:
                                 file_language=file_lang,
                                 context_lines=ctx_lines,
                                 language=lang,
+                                project_summary=st.session_state.get("project_summary", ""),
                             )
                             st.session_state[seg_key]  = result
                             st.session_state[stat_key] = "proposed"
@@ -521,6 +546,42 @@ def _render_code_fixer(active: dict) -> None:
         elif status == "accepted":
             st.success(f"✅ Line {line_no} — đã được sửa và áp dụng.")
 
+
+@st.dialog("🤖 Phân tích Tổng quan Dự án (AI)", width="large")
+def _show_project_summary_dialog():
+    api_key = st.session_state.get("groq_api_key", "").strip()
+    if not api_key:
+        st.warning("💡 Vui lòng nhập Groq API key trong tab Prediction để sử dụng tính năng này.")
+        return
+
+    st.markdown("Tính năng này sẽ gửi toàn bộ cấu trúc dự án của bạn cho AI để phân tích nghiệp vụ lõi, cấu trúc thư mục, và hướng dẫn sử dụng.")
+    
+    if st.button("🚀 Chạy phân tích kiến trúc & nghiệp vụ", type="primary", use_container_width=True):
+        try:
+            import importlib
+            ai_mod = _load_ai_reviewer()
+            importlib.reload(ai_mod)  # Force reload to clear cache
+            
+            model_id = st.session_state.get("groq_model", "llama-3.3-70b-versatile")
+            rv = ai_mod.GroqReviewer(api_key=api_key, model=model_id)
+            lang = st.session_state.get("groq_lang", "vi")
+            
+            # Lấy giới hạn ký tự tương ứng với model đã chọn để tận dụng tối đa TPM
+            limit = getattr(ai_mod, "MODEL_CHAR_LIMITS", {}).get(model_id, 25000)
+            
+            with st.spinner(f"AI đang đọc toàn bộ mã nguồn (giới hạn {limit//1000}k ký tự)..."):
+                stream = rv.summarize_project_logic(
+                    files=st.session_state.files,
+                    language=lang,
+                    char_limit=limit
+                )
+                st.session_state.project_summary = st.write_stream(stream)
+        except Exception as exc:
+            st.error(f"Lỗi phân tích AI: {exc}")
+            
+    if st.session_state.get("project_summary"):
+        st.markdown("---")
+        st.markdown(st.session_state.project_summary)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 1 — WORKSPACE
@@ -577,6 +638,11 @@ def _tab_workspace() -> None:
                         query=st.session_state.tree_query,
                         risk_filter=st.session_state.tree_risk_filter,
                     )
+                
+                st.divider()
+                if st.button("🤖 Phân tích Tổng quan Dự án", use_container_width=True):
+                    _show_project_summary_dialog()
+
                 st.divider()
                 if st.button("↺ New Import", use_container_width=True):
                     from ui.state import reset_analysis_state
@@ -687,6 +753,7 @@ def _tab_workspace() -> None:
                                         file_language=file_lang,
                                         context_lines=ctx_lines,
                                         language=lang,
+                                        project_summary=st.session_state.get("project_summary", ""),
                                     )
                                     st.session_state[f"fix_seg_{fname}_{line_no}"] = result
                                     st.session_state[seg_stat_key] = "proposed"
@@ -747,6 +814,7 @@ def _tab_workspace() -> None:
                                                 file_language=file_lang,
                                                 context_lines=content_lines[c_start:c_end],
                                                 language=lang,
+                                                project_summary=st.session_state.get("project_summary", ""),
                                             )
                                             st.session_state[seg_key]  = result
                                             st.session_state[stat_key] = "proposed"

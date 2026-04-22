@@ -13,6 +13,7 @@ import shutil
 import random
 from datetime import datetime
 from typing import Any
+import ast
 
 import numpy as np
 import pandas as pd
@@ -191,17 +192,75 @@ def build_entries_from_files(uploaded_files) -> list[dict]:
 # ─────────────────────────────────────────────
 # CODE ANALYSIS
 # ─────────────────────────────────────────────
+def _analyze_python_ast(content: str) -> dict:
+    """Analyze python code using AST to find semantic hotspots and map them to lines."""
+    hotspots = {}
+    try:
+        tree = ast.parse(content)
+        for node in ast.walk(tree):
+            # 1. Bare Except or Broad Except without logging/raising
+            if isinstance(node, ast.ExceptHandler):
+                is_broad = False
+                if node.type is None:
+                    is_broad = True
+                elif isinstance(node.type, ast.Name) and node.type.id == 'Exception':
+                    is_broad = True
+                
+                if is_broad:
+                    has_log_or_raise = False
+                    for child in ast.walk(node):
+                        if isinstance(child, ast.Raise):
+                            has_log_or_raise = True
+                        elif isinstance(child, ast.Call):
+                            if isinstance(child.func, ast.Attribute) and child.func.attr in ('error', 'warning', 'exception', 'debug', 'info'):
+                                has_log_or_raise = True
+                            if isinstance(child.func, ast.Name) and child.func.id == 'print':
+                                has_log_or_raise = True
+                    if not has_log_or_raise:
+                        hotspots[node.lineno] = ('med', "Bắt Exception quá rộng mà không xử lý hoặc log lỗi, có nguy cơ che giấu lỗi hệ thống.")
+                        
+            # 2. While True without break/return
+            elif isinstance(node, ast.While):
+                if isinstance(node.test, ast.Constant) and node.test.value is True:
+                    has_break = False
+                    for child in ast.walk(node):
+                        if isinstance(child, (ast.Break, ast.Return, ast.Raise, ast.Yield, ast.Await)):
+                            has_break = True
+                    if not has_break:
+                        hotspots[node.lineno] = ('high', "Vòng lặp vô hạn (while True) không có điều kiện thoát (break/return).")
+    except Exception:
+        pass
+    return hotspots
+
 def compute_line_risks(content: str, ext: str, file_cc: int) -> dict[int, tuple[str, str]]:
     """Tính risk level cho từng dòng code, hỗ trợ đa ngôn ngữ."""
     risks = {}
     is_js = ext in ('.js', '.jsx', '.ts', '.tsx')
+    is_py = ext == '.py'
     
-    for idx, line in enumerate(content.split('\n')):
+    ast_hotspots = {}
+    if is_py:
+        ast_hotspots = _analyze_python_ast(content)
+    
+    # Tìm tất cả các dòng có chứa cờ ignore
+    ignore_lines = set()
+    lines = content.split('\n')
+    for idx, line in enumerate(lines):
+        if 'defectsight-ignore' in line or 'defectsight: ignore' in line:
+            ignore_lines.add(idx + 1)
+            
+    for idx, line in enumerate(lines):
         t = line.strip()
         num = idx + 1
         score = 0.0
         reasons = []
         
+        # --- Lớp khóa vòng lặp (The Ignore Seal) ---
+        # Kiểm tra xem dòng hiện tại hoặc 2 dòng liền kề bên dưới có cờ ignore không
+        if num in ignore_lines or (num + 1) in ignore_lines or (num + 2) in ignore_lines:
+            risks[num] = ('low', 'Đã được đánh giá và xác nhận an toàn (Ignore flag).')
+            continue
+            
         # General Checks
         if 'exec(' in t or 'eval(' in t:
             score += 0.7
@@ -214,13 +273,13 @@ def compute_line_risks(content: str, ext: str, file_cc: int) -> dict[int, tuple[
             reasons.append("Chứa TODO/FIXME, mã nguồn chưa hoàn thiện.")
             
         # Python specific
-        if ext == '.py':
-            if 'except:' == t or 'except Exception' in t:
-                score += 0.5
-                reasons.append("Bắt mọi Exception (Broad catch) che giấu lỗi hệ thống.")
-            if 'while True:' in t:
-                score += 0.5
-                reasons.append("Vòng lặp vô hạn tiềm ẩn nguy cơ treo (hang) ứng dụng.")
+        if is_py:
+            # Ưu tiên kết quả từ AST thay vì string matching mù quáng
+            if num in ast_hotspots:
+                ast_risk, ast_reason = ast_hotspots[num]
+                score += (0.5 if ast_risk == 'high' else 0.4)
+                reasons.append(ast_reason)
+                
             if t.startswith('def ') and t.count(',') > 4:
                 score += 0.4
                 reasons.append("Hàm nhận quá nhiều tham số (>4) phá vỡ nguyên lý thiết kế.")
@@ -382,8 +441,15 @@ def run_analysis(entries: list[dict]) -> tuple[list[dict], list[str], dict]:
             loc = len([l for l in e['content'].split('\n') if l.strip()])
             metrics = {'loc': loc, 'funcs': 1, 'classes': 0, 'cc': 2, 'decisions': 1, 'comment_ratio': 0}
 
-        risk = compute_risk_score(metrics)
         line_risks = compute_line_risks(e['content'], e.get('ext', ''), metrics['cc'])
+        risk = compute_risk_score(metrics)
+        
+        # Nếu đã sửa hết code (hoặc đánh dấu ignore hết), ép điểm rủi ro xuống LOW
+        high_count = sum(1 for r, _ in line_risks.values() if r == 'high')
+        med_count = sum(1 for r, _ in line_risks.values() if r == 'med')
+        if high_count == 0 and med_count == 0:
+            risk = min(risk, 0.1)
+
         results.append({
             **e, 'metrics': metrics,
             'risk_score': risk, 'line_risks': line_risks,

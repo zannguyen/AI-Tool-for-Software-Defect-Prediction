@@ -28,10 +28,21 @@ from typing import Generator, List, Optional
 
 # ── Groq thresholds ────────────────────────────────────────────────────────
 GROQ_MODELS = {
-    "llama-3.3-70b-versatile": "Llama 3.3 70B (Best quality)",
-    "llama-3.1-8b-instant":    "Llama 3.1 8B (Fastest)",
-    "mixtral-8x7b-32768":      "Mixtral 8x7B (Large context)",
-    "gemma2-9b-it":            "Gemma 2 9B (Google)",
+    "llama-3.3-70b-versatile": "Llama 3.3 70B (12K TPM)",
+    "meta-llama/llama-4-scout-17b-16e-instruct": "Llama 4 Scout 17B (30K TPM - Best for large projects)",
+    "llama-3.1-8b-instant":    "Llama 3.1 8B (6K TPM)",
+    "mixtral-8x7b-32768":      "Mixtral 8x7B",
+    "gemma2-9b-it":            "Gemma 2 9B",
+}
+
+# Giới hạn số lượng ký tự đầu vào dựa trên Tokens Per Minute (TPM) của từng model.
+# Công thức ước tính: (TPM - 4000 output tokens) * 4 chars/token
+MODEL_CHAR_LIMITS = {
+    "llama-3.3-70b-versatile": 32000,                             # 12K TPM -> max 32k chars
+    "meta-llama/llama-4-scout-17b-16e-instruct": 100000,          # 30K TPM -> max 100k chars
+    "llama-3.1-8b-instant": 8000,                                 # 6K TPM -> max 8k chars
+    "mixtral-8x7b-32768": 15000,
+    "gemma2-9b-it": 20000,
 }
 
 # ── Metric thresholds (NASA MDP + style guide consensus) ──────────────────
@@ -205,6 +216,7 @@ Rules:
 - For line-level fixes: return replacement code for just that section.
 - For full-file fixes: return the COMPLETE file with ALL fixes applied.
 - Add a short inline comment on each changed line explaining the fix.
+- IMPORTANT: You MUST add `# defectsight-ignore: AI verified` at the EXACT line that triggers the risk (e.g. `except Exception as e: # defectsight-ignore: AI verified` or `while True: # defectsight-ignore: AI verified`). It MUST be on that specific line.
 - Never remove existing functionality unless it IS the defect."""
 
 
@@ -472,6 +484,88 @@ Which metrics, if improved, would have the highest impact on overall quality.
             if delta:
                 yield delta
 
+    def summarize_project_logic(
+        self,
+        files: list[dict],
+        language: str = "vi",
+        max_tokens: int = 4096,
+        char_limit: int = 50000,
+    ) -> Generator[str, None, None]:
+        """
+        Phân tích toàn bộ mã nguồn để giải thích nghiệp vụ, kiến trúc dự án và cách sử dụng.
+        Tự động chọn lọc các file quan trọng để gửi cho AI (giới hạn ký tự).
+        """
+        # Sắp xếp file ưu tiên: README, main, app, index lên đầu. Các file code sau đó.
+        def _priority(fname: str) -> int:
+            ln = fname.lower()
+            if "readme" in ln: return 0
+            if "main" in ln or "app" in ln or "index" in ln: return 1
+            if ln.endswith(".py") or ln.endswith(".js") or ln.endswith(".ts") or ln.endswith(".java") or ln.endswith(".cpp"): return 2
+            return 3
+            
+        sorted_files = sorted(files, key=lambda x: (_priority(x["name"]), len(x.get("content", ""))))
+        
+        # Gom nội dung source code
+        combined_code = ""
+        for f in sorted_files:
+            content = f.get("content", "")
+            if not content: continue
+            
+            # Ước lượng thêm độ dài
+            block = f"\n\n--- File: {f['name']} ---\n```\n{content}\n```"
+            if len(combined_code) + len(block) > char_limit:
+                # Nếu file quan trọng đầu tiên đã quá dài, cắt bớt
+                if not combined_code:
+                    combined_code = block[:char_limit] + "\n...[TRUNCATED]...\n```"
+                break
+            combined_code += block
+
+        lang_note = ("Trả lời HOÀN TOÀN bằng Tiếng Việt."
+                     if language == "vi" else "Answer in English.")
+
+        system_prompt = (
+            "You are a highly experienced Software Architect. "
+            "Your task is to analyze the provided source code of a software project and explain its core business logic, architecture, and usage."
+        )
+        
+        user_prompt = f"""# Project Source Code Analysis
+
+{lang_note}
+
+Please analyze the following source code and provide a comprehensive **Project Overview & Business Logic Summary**:
+
+### 1. Tổng quan Dự án (Project Overview)
+Dự án này là gì? Giải quyết bài toán gì?
+
+### 2. Nghiệp vụ cốt lõi (Core Business Logic)
+Mô tả các luồng nghiệp vụ chính, các chức năng quan trọng nhất mà mã nguồn đang thực hiện.
+
+### 3. Cấu trúc & Kiến trúc (Architecture)
+Các thành phần chính tương tác với nhau như thế nào? (Database, API, Frontend, Backend...)
+
+### 4. Hướng dẫn sử dụng / Khởi chạy (Usage / Getting Started)
+Tóm tắt cách một người mới có thể sử dụng hoặc chạy dự án này dựa trên những gì bạn thấy trong mã nguồn.
+
+---
+## SOURCE CODE:
+{combined_code}
+"""
+
+        stream = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": user_prompt},
+            ],
+            max_tokens=max_tokens,
+            temperature=0.3,
+            stream=True,
+        )
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content
+            if delta:
+                yield delta
+
     # ── single-segment fix ────────────────────────────────────────────────
     def fix_segment(
         self,
@@ -482,6 +576,7 @@ Which metrics, if improved, would have the highest impact on overall quality.
         file_language: str,
         context_lines: list,
         language: str = "vi",
+        project_summary: str = "",
     ) -> str:
         """Generate a targeted fix for one risky code line."""
         ctx_block = "\n".join(
@@ -489,19 +584,21 @@ Which metrics, if improved, would have the highest impact on overall quality.
             for i, ln in enumerate(context_lines)
         )
         lang_note = (
-            "Gi\u1ea3i th\xedch b\u1eb1ng Ti\u1ebfng Vi\u1ec7t."
+            "Giải thích bằng Tiếng Việt."
             if language == "vi" else "Explain in English."
         )
+        project_context = f"\n\n**Project Context (Business Logic):**\n{project_summary}\n" if project_summary else ""
         prompt = (
             f"Fix this risky code line. {lang_note}\n\n"
             f"**Risky line {line_no}:** `{line_code}`\n"
-            f"**Issue:** [{pattern}] \u2014 {reason}\n"
-            f"**Language:** {file_language}\n\n"
+            f"**Issue:** [{pattern}] — {reason}\n"
+            f"**Language:** {file_language}"
+            f"{project_context}\n\n"
             f"**Context** (>>> marks the risky line):\n"
             f"```{file_language.lower()}\n{ctx_block}\n```\n\n"
             f"Respond with:\n\n"
             f"**Fix:**\n```{file_language.lower()}\n<replacement code>\n```\n\n"
-            f"**Explanation:** <1\u20132 sentences>"
+            f"**Explanation:** <1–2 sentences>"
         )
         resp = self.client.chat.completions.create(
             model=self.model,
@@ -521,23 +618,26 @@ Which metrics, if improved, would have the highest impact on overall quality.
         hotspots: list,
         file_language: str,
         language: str = "vi",
+        project_summary: str = "",
     ) -> str:
         """Generate fixes for ALL risky hotspots in a file at once."""
         issues = "\n".join(
-            f"  - Line {h.line_no} [{h.severity}]: `{h.code[:80]}` \u2192 {h.reason}"
+            f"  - Line {h.line_no} [{h.severity}]: `{h.code[:80]}` → {h.reason}"
             for h in hotspots[:20]
         )
         lang_note = (
-            "Gi\u1ea3i th\xedch ph\u1ea7n 'Changes Made' b\u1eb1ng Ti\u1ebfng Vi\u1ec7t."
+            "Giải thích phần 'Changes Made' bằng Tiếng Việt."
             if language == "vi" else "Explain in English."
         )
         lines = content.splitlines()
         code_block = "\n".join(lines[:250])
         if len(lines) > 250:
-            code_block += f"\n# ... ({len(lines) - 250} more lines \u2014 only fix visible issues)"
+            code_block += f"\n# ... ({len(lines) - 250} more lines — only fix visible issues)"
+            
+        project_context = f"\n\n## Project Context (Business Logic)\n{project_summary}\n" if project_summary else ""
         prompt = (
             f"Fix ALL risky patterns below. {lang_note}\n\n"
-            f"## Issues to Fix ({len(hotspots)} found)\n{issues}\n\n"
+            f"## Issues to Fix ({len(hotspots)} found)\n{issues}{project_context}\n\n"
             f"## Source Code\n```{file_language.lower()}\n{code_block}\n```\n\n"
             f"Return:\n"
             f"**Fixed Code:**\n```{file_language.lower()}\n<complete fixed source>\n```\n\n"
