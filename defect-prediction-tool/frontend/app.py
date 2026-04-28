@@ -1095,19 +1095,7 @@ def _tab_training() -> None:
                       delta="imbalanced" if defect_rate < 25 else "balanced",
                       delta_color="inverse" if defect_rate < 25 else "normal")
 
-            # class count bar
-            counts = df_prev["LABEL"].value_counts().rename({0:"Clean",1:"Defective"})
-            fig = go.Figure(go.Bar(
-                x=counts.index, y=counts.values,
-                marker_color=[SAFE, DANGER],
-                text=counts.values, textposition="outside",
-                textfont=dict(color=INK),
-            ))
-            fig.update_layout(**_plotly_base(), height=180,
-                              showlegend=False,
-                              xaxis=dict(color=INK),
-                              yaxis=dict(color=INK, showgrid=True, gridcolor=LINE))
-            st.plotly_chart(fig, use_container_width=True)
+            pass
         except Exception as e:
             st.error(f"Error loading dataset: {e}")
 

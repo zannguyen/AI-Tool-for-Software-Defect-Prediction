@@ -48,12 +48,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import joblib
 import numpy as np
-from sklearn.ensemble import (
-    GradientBoostingClassifier,
-    RandomForestClassifier,
-    StackingClassifier,
-    VotingClassifier,
-)
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
@@ -68,21 +63,6 @@ from sklearn.neural_network import MLPClassifier
 
 warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.WARNING)  # suppress sklearn deprecation noise
-
-# ── optional heavy libraries ──────────────────────────────────────────────────
-try:
-    import xgboost as xgb
-
-    XGB_AVAILABLE = True
-except ImportError:
-    XGB_AVAILABLE = False
-
-try:
-    import lightgbm as lgb
-
-    LGB_AVAILABLE = True
-except ImportError:
-    LGB_AVAILABLE = False
 
 try:
     import optuna
@@ -380,195 +360,6 @@ def _train_mlp(
                      "Neural Network (MLP)", time.time() - t0, best, cv_folds)
 
 
-def _train_xgboost(
-    X_train, y_train, X_test, y_test, tune: bool, cv_folds
-) -> Optional[ModelResult]:
-    """
-    XGBoost — gradient boosted trees, state-of-the-art on tabular SDP.
-    Handles imbalance via scale_pos_weight = n_neg / n_pos.
-    Strength: usually #1 single model on NASA MDP datasets in recent papers.
-    """
-    if not XGB_AVAILABLE:
-        return None
-
-    spw = _get_pos_weight(y_train)
-
-    if tune and OPTUNA_AVAILABLE:
-        def space(trial):
-            return {
-                "n_estimators": trial.suggest_int("n_estimators", 100, 600),
-                "max_depth": trial.suggest_int("max_depth", 3, 10),
-                "learning_rate": trial.suggest_float("lr", 0.01, 0.3, log=True),
-                "subsample": trial.suggest_float("subsample", 0.6, 1.0),
-                "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
-                "reg_alpha": trial.suggest_float("reg_alpha", 1e-5, 1.0, log=True),
-                "reg_lambda": trial.suggest_float("reg_lambda", 0.5, 5.0),
-                "min_child_weight": trial.suggest_int("min_child_weight", 1, 10),
-            }
-        best = _tune_with_optuna(
-            lambda p: xgb.XGBClassifier(
-                **p, scale_pos_weight=spw, eval_metric="auc",
-                random_state=42, verbosity=0,
-                use_label_encoder=False,
-            ),
-            space, X_train, y_train, n_trials=50, cv_folds=cv_folds,
-        )
-    elif tune:
-        best = _tune_with_grid(
-            xgb.XGBClassifier(scale_pos_weight=spw, eval_metric="auc",
-                               random_state=42, verbosity=0),
-            {"n_estimators": [100, 300], "max_depth": [4, 7],
-             "learning_rate": [0.05, 0.1]},
-            X_train, y_train, cv_folds,
-        )
-    else:
-        best = {"n_estimators": 300, "max_depth": 6, "learning_rate": 0.05,
-                "subsample": 0.8, "colsample_bytree": 0.8}
-
-    t0 = time.time()
-    clf = xgb.XGBClassifier(
-        **best, scale_pos_weight=spw, eval_metric="auc",
-        random_state=42, verbosity=0,
-    )
-    clf.fit(X_train, y_train)
-    return _evaluate(clf, X_train, y_train, X_test, y_test,
-                     "XGBoost", time.time() - t0, best, cv_folds)
-
-
-def _train_lightgbm(
-    X_train, y_train, X_test, y_test, tune: bool, cv_folds
-) -> Optional[ModelResult]:
-    """
-    LightGBM — fast GBDT, excellent on high-dimensional SDP data.
-    is_unbalance=True internally adjusts for class imbalance.
-    Strength: 3–10× faster than XGBoost on large datasets; similar AUC.
-    """
-    if not LGB_AVAILABLE:
-        return None
-
-    if tune and OPTUNA_AVAILABLE:
-        def space(trial):
-            return {
-                "n_estimators": trial.suggest_int("n_estimators", 100, 600),
-                "num_leaves": trial.suggest_int("num_leaves", 20, 150),
-                "learning_rate": trial.suggest_float("lr", 0.01, 0.3, log=True),
-                "max_depth": trial.suggest_int("max_depth", 3, 12),
-                "min_child_samples": trial.suggest_int("min_child_samples", 10, 100),
-                "subsample": trial.suggest_float("subsample", 0.6, 1.0),
-                "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
-                "reg_alpha": trial.suggest_float("reg_alpha", 1e-5, 1.0, log=True),
-            }
-        best = _tune_with_optuna(
-            lambda p: lgb.LGBMClassifier(
-                **p, is_unbalance=True, random_state=42, verbosity=-1,
-            ),
-            space, X_train, y_train, n_trials=50, cv_folds=cv_folds,
-        )
-    elif tune:
-        best = _tune_with_grid(
-            lgb.LGBMClassifier(is_unbalance=True, random_state=42, verbosity=-1),
-            {"n_estimators": [100, 300], "num_leaves": [31, 63],
-             "learning_rate": [0.05, 0.1]},
-            X_train, y_train, cv_folds,
-        )
-    else:
-        best = {"n_estimators": 300, "num_leaves": 63, "learning_rate": 0.05,
-                "subsample": 0.8, "colsample_bytree": 0.8}
-
-    t0 = time.time()
-    clf = lgb.LGBMClassifier(
-        **best, is_unbalance=True, random_state=42, verbosity=-1,
-    )
-    clf.fit(X_train, y_train)
-    return _evaluate(clf, X_train, y_train, X_test, y_test,
-                     "LightGBM", time.time() - t0, best, cv_folds)
-
-
-def _train_gradient_boosting(
-    X_train, y_train, X_test, y_test, tune: bool, class_weight_dict, cv_folds
-) -> ModelResult:
-    """
-    sklearn GradientBoosting — fallback when both XGB and LGB absent.
-    Slower than XGB/LGB but no extra dependency.
-    Uses sample_weight to handle imbalance.
-    """
-    spw = np.where(
-        y_train == 1,
-        class_weight_dict.get(1, 1.0),
-        class_weight_dict.get(0, 1.0),
-    )
-    best = {"n_estimators": 200, "max_depth": 5, "learning_rate": 0.05,
-            "subsample": 0.8}
-
-    t0 = time.time()
-    clf = GradientBoostingClassifier(**best, random_state=42)
-    clf.fit(X_train, y_train, sample_weight=spw)
-    return _evaluate(clf, X_train, y_train, X_test, y_test,
-                     "Gradient Boosting", time.time() - t0, best, cv_folds)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ENSEMBLE TRAINERS
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _train_voting_ensemble(
-    base_models: List[Tuple[str, Any]],
-    X_train, y_train, X_test, y_test, cv_folds
-) -> ModelResult:
-    """
-    Soft VotingClassifier — averages predict_proba across base models.
-
-    Why soft voting?
-    ────────────────
-    Hard voting uses majority vote on binary predictions, discarding
-    probability information. Soft voting averages probabilities → lower
-    variance → typically higher AUC, especially with calibrated models.
-
-    In SDP, combining LR (linear boundary) + RF (nonlinear) + XGB (boosted)
-    often outperforms any single model by 1-3% AUC.
-    """
-    t0 = time.time()
-    vc = VotingClassifier(estimators=base_models, voting="soft", n_jobs=-1)
-    vc.fit(X_train, y_train)
-    return _evaluate(vc, X_train, y_train, X_test, y_test,
-                     "Voting Ensemble (Soft)", time.time() - t0, {}, cv_folds)
-
-
-def _train_stacking_ensemble(
-    base_models: List[Tuple[str, Any]],
-    X_train, y_train, X_test, y_test, cv_folds
-) -> ModelResult:
-    """
-    StackingClassifier — LR meta-learner on out-of-fold predictions.
-
-    Why stacking?
-    ─────────────
-    Base classifiers' predictions become features for a meta-model.
-    Stacking learns WHICH base model to trust for which region of input
-    space. Typically outperforms voting by 0.5–2% AUC.
-
-    Meta-learner = Logistic Regression:
-    • Fast, interpretable weights
-    • Less prone to overfitting on the meta-features
-    • passthrough=True adds original features → meta-learner has full context
-    """
-    meta = LogisticRegression(C=1.0, class_weight="balanced",
-                              max_iter=1000, random_state=42)
-    skf_inner = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
-
-    t0 = time.time()
-    sc = StackingClassifier(
-        estimators=base_models,
-        final_estimator=meta,
-        cv=skf_inner,
-        stack_method="predict_proba",
-        passthrough=False,
-        n_jobs=-1,
-    )
-    sc.fit(X_train, y_train)
-    return _evaluate(sc, X_train, y_train, X_test, y_test,
-                     "Stacking Ensemble", time.time() - t0, {}, cv_folds)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN TRAINER CLASS
@@ -648,38 +439,7 @@ class ModelTrainer:
                   _train_mlp,
                   X_train, y_train, X_test, y_test, tune, cw, cv_folds)
 
-        # ── boosted trees ─────────────────────────────────────────────────
-        if XGB_AVAILABLE:
-            self._run("XGBoost",
-                      _train_xgboost,
-                      X_train, y_train, X_test, y_test, tune, cv_folds)
-        else:
-            self._info("XGBoost not installed — training sklearn GradientBoosting instead.")
-            self._run("Gradient Boosting",
-                      _train_gradient_boosting,
-                      X_train, y_train, X_test, y_test, tune, cw, cv_folds)
 
-        if LGB_AVAILABLE:
-            self._run("LightGBM",
-                      _train_lightgbm,
-                      X_train, y_train, X_test, y_test, tune, cv_folds)
-
-        # ── ensemble layer ────────────────────────────────────────────────
-        if self.include_ensembles and len(self.results_) >= 2:
-            self._info("Building ensemble models...")
-            base = [
-                (name, res.model)
-                for name, res in self.results_.items()
-                if hasattr(res.model, "predict_proba")
-            ]
-            if len(base) >= 2:
-                self._run("Voting Ensemble (Soft)",
-                          _train_voting_ensemble,
-                          base, X_train, y_train, X_test, y_test, cv_folds)
-
-                self._run("Stacking Ensemble",
-                          _train_stacking_ensemble,
-                          base, X_train, y_train, X_test, y_test, cv_folds)
 
         self._info(
             f"Pipeline complete. "

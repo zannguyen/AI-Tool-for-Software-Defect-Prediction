@@ -17,9 +17,11 @@ import ast
 
 import numpy as np
 import pandas as pd
+import joblib
 
 # code_metrics_extractor is a sibling module in backend/
 from code_metrics_extractor import CodeMetricsExtractor
+from preprocessing import SDPPreprocessor, load_data
 
 
 # ─────────────────────────────────────────────
@@ -361,38 +363,97 @@ def compute_risk_score(m: dict) -> float:
 
 
 # ─────────────────────────────────────────────
-# ML SIMULATION
+# ML PIPELINE INTEGRATION
 # ─────────────────────────────────────────────
+_ML_MODELS_CACHE = None
+_PREPROCESSOR_CACHE = None
+
+def _get_ml_pipeline():
+    """Load models and refit preprocessor once for inference."""
+    global _ML_MODELS_CACHE, _PREPROCESSOR_CACHE
+    if _ML_MODELS_CACHE is not None and _PREPROCESSOR_CACHE is not None:
+        return _ML_MODELS_CACHE, _PREPROCESSOR_CACHE
+
+    _ML_MODELS_CACHE = {}
+    base_dir = os.path.dirname(__file__)
+    models_dir = os.path.join(base_dir, 'models')
+    
+    if os.path.exists(models_dir):
+        for fname in os.listdir(models_dir):
+            if fname.endswith('.joblib'):
+                try:
+                    bundle = joblib.load(os.path.join(models_dir, fname))
+                    _ML_MODELS_CACHE[bundle.get('name', fname)] = bundle
+                except Exception:
+                    pass
+
+    data_file = os.path.join(base_dir, 'data', 'kc1_kc2.csv')
+    if _ML_MODELS_CACHE and os.path.exists(data_file):
+        try:
+            df = load_data(data_file)
+            pp = SDPPreprocessor(imbalance_strategy="none", n_select=12, random_state=42)
+            pp.fit_transform(df)
+            _PREPROCESSOR_CACHE = pp
+        except Exception as e:
+            print("Failed to fit preprocessor for inference:", e)
+
+    return _ML_MODELS_CACHE, _PREPROCESSOR_CACHE
+
+def _approx_halstead(metrics: dict) -> dict:
+    """Xấp xỉ (Approximate) các chỉ số Halstead từ số lượng LOC và CC để nạp vào mô hình."""
+    loc = metrics.get('loc', 1)
+    cc = metrics.get('cc', 1)
+    
+    d = cc * 2.0
+    n = loc * 5.0
+    v = n * 5.0
+    l_ = 1.0 / d if d > 0 else 1.0
+    i_ = v / d if d > 0 else v
+    e = v * d
+    b = v / 3000.0
+    t = e / 18.0
+    
+    return {
+        'loc': loc, 'v(g)': cc, 'ev(g)': max(1, cc // 2), 'iv(g)': max(1, cc // 2),
+        'd': d, 'n': n, 'v': v, 'l': l_, 'i': i_, 'e': e, 'b': b, 't': t,
+        'lOCode': loc, 'lOComment': loc * metrics.get('comment_ratio', 0.0),
+        'lOBlank': loc * 0.1,
+        'locCodeAndComment': 0, 'uniq_Op': 10 + cc, 'uniq_Opnd': loc // 2,
+        'total_Op': loc * 3, 'total_Opnd': loc * 2, 'branchCount': metrics.get('decisions', 0)
+    }
+
 def make_model_results(avg_risk: float) -> dict:
-    """Tạo kết quả model simulation (giống khi train thật)."""
+    """Trả về kết quả metrics thật từ các model đã train (nếu có), nếu không dùng fallback giả lập."""
+    models, _ = _get_ml_pipeline()
+    if models:
+        allowed_models = {"Random Forest", "Logistic Regression", "Neural Network", "Neural Network (MLP)"}
+        colors = ['#4fc3f7', '#4ec94e', '#ce9178', '#c586c0', '#dcdcaa', '#f44747', '#f29111']
+        out = {}
+        idx = 0
+        for name, bundle in models.items():
+            if name not in allowed_models:
+                continue
+            m = bundle.get('metrics', {})
+            out[name] = {
+                'color': colors[idx % len(colors)],
+                'accuracy': float(m.get('accuracy', 0)),
+                'precision': float(m.get('precision', 0)),
+                'recall': float(m.get('recall', 0)),
+                'f1': float(m.get('f1', 0)),
+                'auc': float(m.get('roc_auc', 0)),
+            }
+            idx += 1
+        return out
+
+    # Fallback giả lập (simulation)
     def jitter(): return random.uniform(-0.04, 0.04)
     def clip(v): return float(np.clip(v, 0.1, 0.99))
     random.seed(int(avg_risk * 1000))
     return {
-        'Logistic Regression': {
-            'color': '#4fc3f7',
-            'accuracy': clip(0.745 + jitter()),
-            'precision': clip(0.357 + jitter()),
-            'recall': clip(0.694 + jitter()),
-            'f1': clip(0.472 + jitter()),
-            'auc': clip(0.796 + jitter()),
-        },
-        'Random Forest': {
-            'color': '#4ec94e',
-            'accuracy': clip(0.804 + jitter()),
-            'precision': clip(0.419 + jitter()),
-            'recall': clip(0.500 + jitter()),
-            'f1': clip(0.456 + jitter()),
-            'auc': clip(0.783 + jitter()),
-        },
-        'Neural Network': {
-            'color': '#ce9178',
-            'accuracy': clip(0.851 + jitter()),
-            'precision': clip(0.667 + jitter()),
-            'recall': clip(0.185 + jitter()),
-            'f1': clip(0.290 + jitter()),
-            'auc': clip(0.793 + jitter()),
-        },
+        'Logistic Regression (Simulated)': {
+            'color': '#4fc3f7', 'accuracy': clip(0.745 + jitter()), 'precision': clip(0.357 + jitter()),
+            'recall': clip(0.694 + jitter()), 'f1': clip(0.472 + jitter()), 'auc': clip(0.796 + jitter()),
+        }
     }
 
 
@@ -423,6 +484,13 @@ def run_analysis(entries: list[dict]) -> tuple[list[dict], list[str], dict]:
 
     logs.append('[METRICS] Extracting code metrics...')
 
+    logs.append('[ML] Loading ML models for inference...')
+    models, preprocessor = _get_ml_pipeline()
+    if models and preprocessor:
+        logs.append(f'[OK] Loaded {len(models)} trained models.')
+    else:
+        logs.append('[WARN] Trained models or preprocessor not found. Using rule-based fallback.')
+
     results = []
     for e in file_entries:
         fname = e.get('fname', e['name'])
@@ -442,7 +510,32 @@ def run_analysis(entries: list[dict]) -> tuple[list[dict], list[str], dict]:
             metrics = {'loc': loc, 'funcs': 1, 'classes': 0, 'cc': 2, 'decisions': 1, 'comment_ratio': 0}
 
         line_risks = compute_line_risks(e['content'], e.get('ext', ''), metrics['cc'])
+        
+        # 1. Base rule-based risk
         risk = compute_risk_score(metrics)
+        
+        # 2. ML Predictions override
+        if models and preprocessor:
+            try:
+                approx_feat = _approx_halstead(metrics)
+                df_new = pd.DataFrame([approx_feat])
+                X_new = preprocessor.transform_new(df_new)
+                
+                # Use Random Forest as primary predictor if available, otherwise fallback
+                pred_model = None
+                if 'Random Forest' in models:
+                    pred_model = models['Random Forest']['model']
+                elif 'XGBoost' in models:
+                    pred_model = models['XGBoost']['model']
+                else:
+                    pred_model = list(models.values())[0]['model']
+                
+                if hasattr(pred_model, 'predict_proba'):
+                    ml_risk = pred_model.predict_proba(X_new)[0, 1]
+                    # Blend ML prediction with rule-based to prevent extreme jumps
+                    risk = (ml_risk * 0.7) + (risk * 0.3)
+            except Exception as exc:
+                pass
         
         # Nếu đã sửa hết code (hoặc đánh dấu ignore hết), ép điểm rủi ro xuống LOW
         high_count = sum(1 for r, _ in line_risks.values() if r == 'high')
@@ -457,10 +550,6 @@ def run_analysis(entries: list[dict]) -> tuple[list[dict], list[str], dict]:
 
         risk_lbl = 'HIGH' if risk >= 0.5 else 'MED' if risk >= 0.3 else 'LOW'
         logs.append(f'[OK] {e["name"]}  CC={metrics["cc"]} LOC={metrics["loc"]} Risk={risk_lbl}')
-
-    logs.append('[ML] Running ML inference...')
-    for msg in ['Logistic Regression...', 'Random Forest (100 trees)...', 'Neural Network (MLP)...', 'Computing ensemble...']:
-        logs.append(f'[RUNNING] {msg}')
 
     avg_risk = np.mean([f['risk_score'] for f in results]) if results else 0
     high = sum(1 for f in results if f['risk_score'] >= 0.5)

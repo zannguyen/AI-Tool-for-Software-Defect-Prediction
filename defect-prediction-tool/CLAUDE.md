@@ -1005,6 +1005,201 @@ if st.session_state.get("explainers") and active_file:
 pip install shap lime
 # requirements.txt:
 shap>=0.44.0
+    → _run_analysis_from_inputs()
+       → build_entries_from_zip() / build_entries_from_files() → list[dict entry]
+       → run_analysis(entries)
+          ① CodeMetricsExtractor.extract_from_directory(tmp_dir)
+          ② compute_risk_score(metrics) cho từng file
+          ③ compute_line_risks(content, ext, cc) cho từng file
+          ④ make_model_results(avg_risk) — ML simulation
+       → session_state.files = results
+       → session_state.analysis = summary
+       → session_state.analyzed = True
+       → session_state.active_file = results[0]["name"]
+       → st.rerun()
+
+[3] Post-analysis state:
+    → TopBar: cập nhật N files / LOC / Avg risk% / "Analyzed"
+    → Left: Explorer panel
+       - ds-pane-title "Explorer (N files)"
+       - text_input "Find file" (tree_query)
+       - selectbox "Risk filter" [All/High/Medium/Low]
+       - selectbox "Model view" [All Models/LR/RF/NN]
+       - render_tree() trong st.container(height=520)
+         · File: icon + name + 🔴/🟡/🟢
+         · Folder: ▾/▸ + name (expandable)
+    → Center: ds-file-header + ds-metric-grid + ds-code-box
+       · Dòng HIGH: nền đỏ nhạt + badge "⚠ HIGH"
+       · Dòng MED: nền vàng nhạt + badge "⚡ MED"
+       · Dòng LOW: không có nền (bug: .vs-cl.lo chưa style)
+    → Right: Workspace Risk % + High/Med/Low st.metric + model progress bars
+             + top 6 risky files (buttons)
+    → Console: colored log lines
+
+[4] User click file trong tree → st.session_state.active_file = name → rerun
+[5] User click file trong "Top risky files" (right panel) → tương tự
+[6] Không có nút "Reset/New Import" trong phiên bản hiện tại
+    → Phải reload page để import lại
+```
+
+---
+
+## 🐛 Gotchas & Notes
+
+1. **Layout dùng `st.container(height=800)` không phải `position:fixed`**: Phiên bản hiện tại dùng Streamlit native columns và scrollable containers, không dùng CSS fixed positioning cho 3 cột chính. `position:fixed` chỉ còn trong comments cũ.
+
+2. **`.vs-cl.lo` và `.vs-rb.lo` chưa có CSS**: Dòng LOW render class nhưng không có style tương ứng trong `styles.py`. Cần thêm nếu muốn highlight dòng LOW.
+
+3. **Phân biệt file vs folder trong tree**: File entry có key `'content'`, folder node thì không. Pattern: `isinstance(value, dict) and 'content' in value`.
+
+4. **Key uniqueness trong tree**: Dùng `md5(f"{parent_path}/{name}")[:12]` → tránh collision khi có file cùng tên ở thư mục khác.
+
+5. **`make_model_results()` là simulation**: Không train thật. Model thật nằm trong `backend/models.py` nhưng **chưa được tích hợp** vào UI flow.
+
+6. **Không có "Reset" button**: Sau khi analyze, không có nút nào để quay lại Import state. User phải refresh trang.
+
+7. **`run_analysis()` dùng `tempfile.mkdtemp()`**: File được ghi ra temp dir, chạy extractor, rồi xóa (`shutil.rmtree`). Nếu extractor crash, `finally` vẫn dọn dẹp.
+
+8. **import trong `api.py`**: `from code_metrics_extractor import CodeMetricsExtractor` — import trực tiếp (không prefix `backend.`). Hoạt động vì `api.py` chạy với `backend/` trong sys.path khi launch từ `run.bat` / `streamlit run frontend/app.py`.
+
+9. **`dashboard/Dashboard.py`**: T tồn tại trong dự án nhưng **không được gọi** từ `app.py`. Là file riêng biệt, chưa tích hợp.
+
+10. **`backend/features.py`, `preprocessing.py`, `evaluation.py`, `database.py`**: Tồn tại nhưng **không được import/gọi** từ UI hiện tại. Là legacy code từ phiên bản cũ.
+
+---
+
+## 🔍 Backend: `backend/explainability.py` (~850 dòng) — NEW 2026-04-21
+
+### Tổng quan
+
+Module XAI (Explainable AI) giải thích TẠI SAO model dự đoán một module là defective, dùng SHAP (global + local) và LIME (local fallback).
+
+### Explainer types (tự động chọn)
+
+| Model type | Explainer | Lý do |
+|---|---|---|
+| RandomForest, XGBoost, LightGBM, GradientBoosting | `TreeExplainer` | Exact Shapley values qua tree path — O(depth), không sampling |
+| LogisticRegression | `LinearExplainer` | Exact cho linear models, fast |
+| MLP, Voting, Stacking | `PermutationExplainer` | Model-agnostic, sample permutations |
+
+### Class `ModelExplainer` — API
+
+```python
+from explainability import explain_model, plot_shap_comparison
+
+# Tạo và fit explainer (gọi sau khi train)
+exp = explain_model(
+    model        = rf_model,
+    X_train      = X_tr,          # background dataset cho explainer
+    X_test       = X_te,
+    feature_names= pp.selected_features_,
+    model_name   = "Random Forest",
+)
+
+# ── GLOBAL (toàn bộ test set) ──
+fig_bar  = exp.plot_global_importance(X_te, top_n=15)  # Plotly bar
+fig_bee  = exp.plot_beeswarm(X_te, top_n=12)           # matplotlib (st.pyplot)
+fig_heat = exp.plot_feature_heatmap(X_te, top_n=10)    # Plotly heatmap
+
+# ── LOCAL (module tại index i) ──
+fig_wf   = exp.plot_local_waterfall(X_te, instance_idx=7, top_n=12)   # Plotly waterfall
+fig_lime = exp.plot_lime_explanation(X_te, instance_idx=7, top_n=10)  # Plotly bar (LIME)
+fig_dep  = exp.plot_dependency(X_te, "v(g)", "loc")    # Plotly scatter
+
+# Narrative text (markdown)
+text = exp.generate_narrative(X_te, 7, pred_proba[7])  # str markdown
+
+# ── MULTI-MODEL (tab Đánh Giá) ──
+fig_cmp = plot_shap_comparison(explainers_dict, X_te, top_n=10)
+fig_bkd = plot_prediction_breakdown(explainers_dict, X_te, instance_idx=7)
+```
+
+### SHAP vs LIME — khi nào dùng cái nào
+
+| | SHAP | LIME |
+|---|---|---|
+| **Lý thuyết** | Shapley values — consistent, fair attribution | Local linear surrogate |
+| **Ưu điểm** | Globally consistent, additive, model-agnostic | Trực quan, dễ tune |
+| **Dùng cho** | Verify important features globally | Cross-validate SHAP cho 1 instance |
+| **Agree?** | Nếu SHAP và LIME ĐỒNG Ý → attribution đáng tin | Nếu DISAGREE → cần kiểm tra |
+| **Tốc độ** | TreeExplainer: nhanh | Luôn cần ~500 samples |
+
+### Kết quả smoke test (Logistic Regression trên KC1+KC2)
+
+```
+Top SHAP features (mean |SHAP|):
+  log_total_Opnd : 0.8562   ← Halstead total operands (log)
+  uniq_Opnd      : 0.7972   ← Unique operands
+  v(g)           : 0.6389   ← Cyclomatic complexity
+  log_b          : 0.5039   ← Halstead bugs estimate (log)
+  log_v          : 0.4359   ← Halstead volume (log)
+```
+
+Insight: Halstead metrics (operand complexity) quan trọng hơn cyclomatic complexity
+theo LinearExplainer — phù hợp với literature SDP (Menzies 2004).
+
+### Tích hợp vào Streamlit — tab "Đánh Giá"
+
+```python
+# frontend/app.py — thêm section sau khi train xong
+
+import sys; sys.path.insert(0, "backend")
+from explainability import ModelExplainer, explain_model, plot_shap_comparison
+
+# Sau khi train:
+# st.session_state.explainers = {}
+# for name, res in trainer.results_.items():
+#     exp = explain_model(res.model, X_tr, X_te, feature_names, name)
+#     st.session_state.explainers[name] = exp
+
+# Tab Đánh Giá — Global XAI:
+if st.session_state.get("explainers"):
+    exp = st.session_state.explainers[selected_model]
+
+    st.subheader("Feature Importance (SHAP)")
+    st.plotly_chart(exp.plot_global_importance(X_te), use_container_width=True)
+
+    st.subheader("SHAP Beeswarm")
+    fig_bee = exp.plot_beeswarm(X_te)
+    st.pyplot(fig_bee, use_container_width=True)
+
+    st.subheader("Feature Heatmap")
+    st.plotly_chart(exp.plot_feature_heatmap(X_te), use_container_width=True)
+
+    if len(st.session_state.explainers) > 1:
+        st.subheader("Cross-model SHAP Comparison")
+        st.plotly_chart(
+            plot_shap_comparison(st.session_state.explainers, X_te),
+            use_container_width=True,
+        )
+
+# Tab Dự Đoán — Local XAI cho module đang xem:
+if st.session_state.get("explainers") and active_file:
+    instance_idx = ...  # lấy từ active_file index
+    exp = st.session_state.explainers[selected_model]
+
+    st.subheader("Why is this module risky? (SHAP)")
+    st.plotly_chart(
+        exp.plot_local_waterfall(X_te, instance_idx),
+        use_container_width=True,
+    )
+
+    st.subheader("LIME Explanation")
+    st.plotly_chart(
+        exp.plot_lime_explanation(X_te, instance_idx),
+        use_container_width=True,
+    )
+
+    st.subheader("Risk Narrative")
+    st.markdown(exp.generate_narrative(X_te, instance_idx, pred_proba))
+```
+
+### Cài thư viện
+
+```bash
+pip install shap lime
+# requirements.txt:
+shap>=0.44.0
 lime>=0.2.0
 ```
 
@@ -1012,11 +1207,19 @@ lime>=0.2.0
 
 ## 📋 Changelog
 
-### 2026-04-21 (session hiện tại)
+### 2026-04-22 (session hiện tại)
+- **[NEW] Project Summary & Token Management**: Bổ sung tính năng phân tích tổng quan dự án (Business Logic) bằng Groq AI qua `st.dialog`. Quản lý động giới hạn token (`MODEL_CHAR_LIMITS`) dựa trên TPM limits để tránh lỗi 413 Rate Limit.
+- **[NEW] Context-Aware AI Fixing**: Tích hợp `project_summary` vào prompt của `fix_segment` và `fix_all_file`. Giờ đây AI có khả năng sửa code dựa trên hiểu biết về toàn bộ kiến trúc thay vì chỉ nhìn vào 1 dòng lỗi.
+- **[FIX] Tắt vòng lặp lỗi (False Positive Loop)**: 
+  - **In-memory sync**: Tính toán lại `line_risks` ngay khi người dùng click "Chấp nhận code", giao diện chuyển xanh lập tức.
+  - **Risk Capping**: Cập nhật thuật toán trong `api.py`. Nếu file không còn hotspot (hoặc đã được gắn cờ ignore), ép `risk_score` (vốn tính bằng Metrics) xuống mức LOW (<10%). Xóa bỏ tình trạng "0 hotspots nhưng rủi ro vẫn 96%".
+- **[FIX] The Ignore Seal**: Hoàn thiện cơ chế khóa lỗi với comment `# defectsight-ignore`. `compute_line_risks` sẽ trả về `low` risk và ngắt quy trình quét AST cho dòng đó.
+
+### 2026-04-21 (session trước)
 - **[ARCH] Refactor app.py sang 5 Tabs**: Đại tu kiến trúc layout từ 3-column sang 5 chức năng (Workspace, Dashboard, Training, Evaluation, Prediction).
-- **[NEW] AI Risk Assessment (Groq)**: Thêm ackend/ai_reviewer.py. Tích hợp LLM (Llama 3.3, Mixtral) phân tích codebase xuất báo cáo Markdown chuyên sâu thay cho dự đoán ML.
+- **[NEW] AI Risk Assessment (Groq)**: Thêm  ackend/ai_reviewer.py. Tích hợp LLM (Llama 3.3, Mixtral) phân tích codebase xuất báo cáo Markdown chuyên sâu thay cho dự đoán ML.
 - **[FIX] Importlib module reload & Naming Conflict**: 
-  - Đổi tên ackend/models.py thành ackend/ml_models.py để tránh xung đột cấu trúc.
+  - Đổi tên  ackend/models.py thành  ackend/ml_models.py để tránh xung đột cấu trúc.
   - Thay thế importlib.util thành import tiêu chuẩn để tránh lỗi AttributeError với class ModelTrainer (dataclass).
 - **[FIX] Plotly & Pandas UI Bugs**:
   - Sửa crash Plotly Heatmap (do parser nhận dải màu có mã Hex 8 chữ số bị lỗi). Chuyển về linear gradient cơ bản.
